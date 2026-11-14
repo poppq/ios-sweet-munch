@@ -1,0 +1,13 @@
+name: mac
+on:
+  push:
+    paths: ['.github/workflows/mac.yml']
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo "runner=${{ matrix.os }}"; sw_vers; xcodebuild -version
