@@ -7,7 +7,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-13, macos-14, macos-15, macos-latest]
+        os: [macos-15, macos-13]
     runs-on: ${{ matrix.os }}
     steps:
-      - run: echo "runner=${{ matrix.os }}"; sw_vers; xcodebuild -version
+      - name: list xcodes
+        run: |
+          echo "== installed:"; ls -d /Applications/Xcode*.app 2>/dev/null || echo none
+          echo "== active:"; xcodebuild -version || true
+          for x in /Applications/Xcode*.app; do echo "--- $x"; defaults read "$x/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true; done
+          echo "== iig:"; xcrun --find iig || true; xcrun iig --version 2>&1 | head -3 || true
+          echo "== runner image:"; sw_vers; echo "ImageVersion=$ImageVersion"
