@@ -1,7 +1,10 @@
 name: ping
-on: workflow_dispatch:
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/ping.yml']
 jobs:
   t:
     runs-on: ubuntu-latest
     steps:
-      - run: echo hello && uname -a
+      - run: echo hello; uname -a; free -h
