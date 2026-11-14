@@ -184,3 +184,150 @@ DTB（或将来用自建 ABL/直接读 DDR）之后交叉验证；在此之前 A
 用 `const char *tbl[8]` 这类指针表会把字符串地址写进 `.data.rel.ro` 变成 6 个 ABS64；
 改成 `switch` 选字面量同样产生 6 个（编译器合成跳转表）。唯一干净写法是**逐个 `if` 直接写字面量**
 （配合 `mem_base()/mem_size()` 这种无表辅助函数）。
+
+## 8. XNU 构建的 CI 现状（2026-11-14）
+
+XNU 只能在 macOS + Xcode 上编，云主机是 Linux，所以构建走 GitHub Actions：
+
+1. 仓库 `poppq/ios-sweet-munch`（public）。推送方式：因为本地 ios-sweet 是浅克隆、
+   推新仓库会报 `did not receive expected object`，改为把工作区 `rsync` 到干净目录、
+   `git init` 后单提交推送。
+2. 触发：`POST /repos/poppq/ios-sweet-munch/actions/workflows/xnu.yml/dispatches`，
+   inputs `macos_version=13.5 kernel_config=DEVELOPMENT machine_config=SWEET keep_going=true`。
+3. **踩坑：`runs-on: macos-14` 在该账号上直接 `cancelled`**，注解是
+   `The configuration 'macos-14-arm64-us-default' is not supported`。
+   实测标签可用性：`macos-15` / `macos-latest` 正常，`macos-13` 长期排队，
+   `macos-14` 不可用。
+4. **副作用**：macos-15 镜像只有 Xcode 16.x / 26.x（实测 `/Applications` 清单：
+   16.0.0–16.4、26.0–26.3），没有上游依赖的 Xcode 15。上游注释说明
+   Xcode 16 的 `iig` 会生成带 `IORPC.kernelContent` 的头，而 xnu-8796 没有该成员。
+   现在固定用最低档 `Xcode_16.0.0.app` 试编，`keep_going=true` 一次收集全部错误。
+
+## 9. iOS 侧素材（已落地）
+
+- `iPhone10,3` 的 `16.7.16 (20H392)` IPSW 完整下载 6,171,035,648 字节，
+  `087-86698-044.dmg` 4,730,814,044B（OS rootfs）、`kernelcache.release.iphone10b` 18,204,358B。
+- `Firmware/all_flash/DeviceTree.d22ap.im4p` 33,719B → 用 `tools/adt.py` 的 `im4p_payload()`
+  解出 `d22ap.adt` 186,084 字节（`dtre`，未加密）。
+- `tools/mkadt.py --device munch` 生成的 `munch.adt` 从 10,100B 变成 **12,784B**，
+  `--dump` 里 `/product` 有 `product-name = 'iPhone X'`——没有这节点 MobileGestalt 会认错机型。
+- Apple CDN 单连接限速约 50KB/s，24 路并发分片才能到 13–67MB/s 聚合。
+
+未完成：APFS→HFS+ 根镜像（`tools/mkiosroot.sh` 需要 `apfs-fuse` + `mkfs.hfsplus`），
+以及 TLMM 按键 / GENI-SPI FocalTech 触控 / 显示驱动均未写。
+
+## 10. 真机首次跑起自建 XNU（2026-11-14 22:50）
+
+第一次把 CI 编出来的内核真正塞进 `fastboot boot` 并跑起来。链路：
+`kernel.development.sweet`（17,188,640B）→ `tools/mkpayload.py`（`virt_base 0xfffffe0006000000`、
+`entry 0xfffffe000748c488`，payload 16,596,224B）→ `shim/build.sh` → `shim-boot-munch-xnu-v.img`
+（17,637,376B，MD5 `5376D2F2F2165BE92F5E48CF1C2A24B4`）→ `fastboot boot`（`Sending 17224 KB OKAY` /
+`Booting OKAY` / `Finished`）。
+
+### 10.1 boot-args 的两个必要项
+
+第一版 `debug=0x8 serial=3 cpus=8 keepsyms=1` 只出到 `sweet early 20: kprintf startup complete`
+就没声了。原因是 `-enable_kprintf_spam` 没给（NOTES.md 第 313 行的要求）：DEVELOPMENT 配置下
+kprintf 默认被静音，且 patch 0012 在 mark 20 之后关掉早期控制台。改成
+
+```
+debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -v
+```
+
+重打包后帧缓冲控制台上出现完整内核日志（白字黑底，1080×2400 上 `FBCON_SCALE=2`）。
+
+### 10.2 实际跑到的位置（屏幕原文，按输出顺序）
+
+```
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes / verification: 0
+Telemetry: Sampling all tasks once per 1 second
+Scheduler: Default of clutch / Setting scheduler priority decay band limit 10
+standard timeslicing quantum is 10000 us / standard background quantum is 2500 us
+msg_table_max_disp1 = 54  mach_kobj_count = 374
+BANK subsystem is initialized / IPC_PTHREAD_PRIORITY subsystem is initialized
+panic_trace: PE_arm_debug_enable_trace enter/exit
+kdp_core zlib memory 0x8000 / Registered coredump handler for kernel
+Serial requested, consistent debug disabled ... configuring debugging over serial
+Initializing serial KDP
+boot version: sweet-shim
+"name" not a kext / "AAPL,phandle" not a kext
+ulock_initialize>thread_max=2560, ull_hash_buckets=1024
+SWEET PRNG: HMAC-SHA256 registered
+SWEET pthread: libpthread-514.100.2 registered
+SWEET AMFI: built-in interface registered (XML entitlements)
+calling mpo_policy_init for vnguard
+Security policy loaded: Guarded vnode policy (vnguard)
+SWEET: trust caches unavailable (Image4/AMFI not installed)
+keepsyms boot arg specified; keeping Linkedit segment for symbols.
+No POST boot-arg set.
+SWEET: starting device-tree platform expert
+SWEET: platform expert registered
+SWEET AKS: AppleKeyStore registered (no passcode, unlocked)
+SWEET WDT: IOWatchdog registered (accepts check-ins, never fires)
+SWEET SURF: IOCoreSurfaceRoot registered
+SWEET HID: buttons registered (test every 0 s)
+SWEET HID: touch registered
+SWEET BATTERY: static fallback, 100% 4200mV external=1 charging=0
+[0]ml_processor_register>pset_find(cluster_id=0) returned pset 0
+[0]ml_processor_register>cpu_id 0xffffffe166f86f900 cluster_id 0 cpu_number 0 is type 0
+SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0x9c000000, default surface 1, presented as 1125x2436
+SWEET CPU: requested=1 selected=1 (limit=0)
+cpu_start() cpu: 0
+SWEET CPU: cpu=0 entered initCPU mpidr=0x0 EL1 IRQs=1
+SWEET CPU: cpu=0 mpidr=0x0 came alive; SGI1 OK
+Copyright (c) 1982, 1986, 1989, 1991, 1993 The Regents of the University of California.
+MAC Framework successfully initialized
+using 1528 buffer headers and 1528 cluster IO buffer headers
+SWEET CPU: 1/1 CPUs initialized, SGI1 verified
+"vm_compressor_mode" is 4
+zone_init: pgzalloc 0xffffffe1008820000:0xffffffe1009174000 (9M) (29 8 slots)
+zone_init: map VM 0xffffffe1009174000:0xfffffe14d5cd8000 (19G)
+zone_init: map RO / GEN0 / GEN1 / GEN2 / GEN3 / DATA / metadata / metaBits / extra
+VM bootstrap done; 85 maps, 165 entries and 502 holes left
+IOKit IOMD setOwnership ENABLED
+IOKit subsystem is initialized          <-- 屏幕最后一行，之后再无输出
+```
+
+也就是说：MMU/TTBR0 切换、pmap、串口与帧缓冲控制台、VM bootstrap、IOKit、平台专家、
+AKS/WDT/SURF/HID/静态电池/CPU 拓扑与 SGI1 自检全部通过，卡在 `bsd_init` 的最后一段。
+
+### 10.3 停在 bsd_init 末段的原因判断
+
+`IOKit subsystem is initialized` 之后就是找根文件系统。这次启动既没传 `--ramdisk`，也没给
+`rd=md0`，ADT `/chosen/memory-map` 里没有 `RAMDisk`，patch 0022 那条「无 IOMedia 也能找根盘」
+的路径也没有盘可找——所以卡在这里是**符合预期**的，不是崩溃。
+
+下一步（唯一缺口）：`tools/mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img` 造 HFS+ 根，
+再用 `mkpayload.py --ramdisk root.img` 塞进 payload，boot-args 带 `rd=md0`。
+
+`mkiosroot.sh` 依赖 `apfs-fuse`（读 UDIF/APFS）+ `mkfs.hfsplus` + `rsync -aH`，并且要
+`mount -t hfsplus -o loop` 才能写入镜像。当前云主机是容器（无 `/dev/fuse`、无 `/dev/loop`、
+`mount` 返回 permission denied），这条链路在容器里做不了，需另找有 mount 权限的执行环境，
+见第 11 节。
+
+### 10.4 复位不生效仍然成立
+
+`shim` 的 `reset()`（PSCI `SYSTEM_RESET` + `SYSTEM_RESET2` 两次尝试）在 kona 上依然无效，
+内核跑飞之后只能长按电源 10 秒回 Android。内核运行期间手机不初始化 USB，`adb`/`fastboot`
+都不可见，这是正常的（不是刷机失败）。
+
+## 11. 根镜像的环境限制（2026-11-14 23:10 实测）
+
+云主机实测能力：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `/dev/fuse` | 不存在 |
+| `/dev/loop*` | 不存在 |
+| 免密 sudo | 可用（`sudo -n true` 返回 0） |
+| `sudo mount -t tmpfs` | `permission denied`（容器无 CAP_SYS_ADMIN） |
+| apfs-fuse / mkfs.hfsplus / 7z / dmg2img | 均未安装（`hfsprogs` apt 有候选包） |
+
+结论：容器里既不能 FUSE 挂 APFS，也不能 loop 挂 HFS+，`mkiosroot.sh` 的原始流程走不通。
+可选替代路径（尚未实施）：
+
+1. QEMU-TCG 小虚拟机：apt 装 `qemu-system-arm`，起一个 aarch64 virt 的 Debian，
+   把 IPSW 与输出镜像走 9p/virtio 共享，在虚拟机里跑 `mkiosroot.sh`。不需要 KVM/特权。
+2. 纯用户态 APFS 读取（`libfsapfs` 或自实现）后直接写 HFS+ 镜像，完全绕开 mount，
+   但要自己处理 LZBITMAP 压缩，工作量大。
+3. 找一台有完整 Linux 权限的机器（用户自己的 PC 装 WSL2 亦可，本机实测未装 WSL）。
