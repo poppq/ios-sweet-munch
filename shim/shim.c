@@ -393,7 +393,7 @@ static void dt_dump(uintptr_t dtb)
 	uintptr_t p = dtb + fbe32(dtb + 8);		/* off_dt_struct */
 	uintptr_t strings = dtb + fbe32(dtb + 12);	/* off_dt_strings */
 	const char *parent[4];
-	int depth = 0, mem_done = 0, rsv_count = 0;
+	int depth = 0, mem_done = 0, rsv_count = 0, rsv_hi = 0;
 
 	for (;;) {
 		uint32_t tok = fbe32(p);
@@ -419,26 +419,30 @@ static void dt_dump(uintptr_t dtb)
 			uint32_t len = fbe32(p), noff = fbe32(p + 4);
 			uintptr_t val = p + 8;
 			const char *pn = (const char *)(strings + noff);
+			/* 4GB 以上的保留区：决定高 bank 能不能整段交给 XNU。 */
+			if (depth == 3 && parent[1] && name_is(parent[1], "reserved-memory") &&
+			    name_is(pn, "reg") && rsv_hi < 8) {
+				uint64_t rb = mem_base(val, 0), rs = mem_size(val, 0);
+				if (rb >= 0x100000000ULL) {
+					con_hex("HI RSV base", rb);
+					con_hex("HI RSV size", rs);
+					rsv_hi++;
+				}
+			}
 			if (depth == 2 && !mem_done && name_is(parent[1], "memory") &&
 			    name_is(pn, "reg")) {
 				int n = len / 16;
 				mem_done = 1;
+				con_hex("MEMREG len", (uint64_t)len);
 				con_hex("MEMRANGES", (uint64_t)n);
-				if (n > 0) {
-					con_hex("MEM base",  mem_base(val, 0));
-					con_hex("MEM size",  mem_size(val, 0));
-				}
-				if (n > 1) {
-					con_hex("MEM2 base", mem_base(val, 1));
-					con_hex("MEM2 size", mem_size(val, 1));
-				}
-				if (n > 2) {
-					con_hex("MEM3 base", mem_base(val, 2));
-					con_hex("MEM3 size", mem_size(val, 2));
-				}
-				if (n > 3) {
-					con_hex("MEM4 base", mem_base(val, 3));
-					con_hex("MEM4 size", mem_size(val, 3));
+				/* Print every bank, not just the first four: the
+				 * 6/8GB boards describe their high DRAM bank after
+				 * the low one and a fixed unroll hides it. */
+				for (int i = 0; i < n && i < 8; i++) {
+					con_hex("RNG idx", (uint64_t)i);
+					con_hex("RNG base", mem_base(val, i));
+					con_hex("RNG size", mem_size(val, i));
+					con_hex("RNG end", mem_base(val, i) + mem_size(val, i));
 				}
 			}
 			p = (val + len + 3) & ~3UL;
@@ -479,6 +483,22 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+/*
+ * The live FDT only describes ~1.4GB here, yet Android's zone spans 8GB: the
+ * bank above 4GB is not in the /memory node at all. Read (never write) a few
+ * words up there to see whether that DRAM is real and reachable with the MMU
+ * off — that is what the ADT would later hand to XNU.
+ */
+static void mem_probe(void)
+{
+	con_hex("PRB 4G", *(volatile uint64_t *)0x100000000UL);
+	con_hex("PRB 5G", *(volatile uint64_t *)0x140000000UL);
+	con_hex("PRB 6G", *(volatile uint64_t *)0x180000000UL);
+	con_hex("PRB 7G", *(volatile uint64_t *)0x1c0000000UL);
+	con_hex("PRB 8G", *(volatile uint64_t *)0x1f8000000UL);
+	con_hex("PRB 9G", *(volatile uint64_t *)0x240000000UL);
+}
+
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
@@ -494,6 +514,8 @@ void shim_main(uint64_t dtb)
 
 	/* What did the bootloader hand us? (DRAM base, timer frequency, core id) */
 	dt_dump(dtb);
+	/* 4GB 以上是否存在可用 DRAM：Android 的 zone 跨了 8GB，活体 FDT 却只写 1.4GB。 */
+	mem_probe();
 	con_hex("CNTFRQ", rsr("cntfrq_el0"));
 	con_hex("MPIDR", rsr("mpidr_el1"));
 	con_skip();

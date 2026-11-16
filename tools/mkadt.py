@@ -33,10 +33,14 @@ BOARDS = {
         #   <0x80000000 0x3bb00000>  low bank 1, 0x80000000-0xbbb00000
         #   <0xc0000000 0x1c000000>  low bank 2, 0xc0000000-0xdc000000
         # Bank 1 carries every fixed carve-out (cont_splash at 0x9c000000,
-        # disp_rdump at 0xb0400000...), bank 2 is clean, so the kernel goes in
-        # bank 2. The above-4G part of the 8G/6G SKU is not handed to us by the
-        # fastboot-boot path, so it is not modelled yet.
-        'phys_base': 0xc0000000, 'mem_size': 0x1c000000,
+        # disp_rdump at 0xb0400000...), bank 2 is clean.
+        # ABL does NOT describe the above-4G bank on the fastboot-boot path
+        # (MEMREG len 0x20 = two ranges only), but the DRAM is there: Android's
+        # zone Normal spans 2,094,956 pages (~8GiB) and shim reads real data at
+        # 0x1_00000000 and 0x1_f8000000. Physical DRAM is 0x80000000-0x2_80000000
+        # (8GiB), so the whole upper bank 0x1_00000000-0x2_80000000 (6GiB) is
+        # handed to the kernel here; no reserved-memory carve-out sits above 4G.
+        'phys_base': 0x100000000, 'mem_size': 0x180000000,
         'fb': 0x9c000000, 'soc': 'qcom,sm8250', 'platform': 'xiaomi,munch',
         'freq_lo': 1804800000,                # 4x A55
         'freq_mid': 2419200000,               # 3x A77 gold

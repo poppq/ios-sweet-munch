@@ -491,3 +491,67 @@ patch 0085 在循环里给每一项打一个编号 `80 + idx`（80–93），循
 
 下一步就看它停在 105（MMIO 读死了）、110/111（doorbell 没被硬件应答）还是 112 之后。
 
+
+### 13.5 用户空间打通（mile8，2026-11-16）
+
+UFS 门铃在 110 号打点后总线挂死（见 13.4），所以根设备改走 mockfs 路线：
+
+1. `tools/sweet-init.S` 用 `clang -target arm64-apple-ios16.0 -c` 汇编（本机装的是
+   `clang-14`，`sudo apt-get install -y clang-14`），再由 `tools/mkinit.py` 包成
+   静态、ad-hoc 签名的 arm64 Mach-O（`__PAGEZERO` + `__TEXT 0x100000000` +
+   `LC_UNIXTHREAD` + `LC_CODE_SIGNATURE`）。这个二进制 16,635 字节，
+   `__TEXT` 16K，代码必须位置无关、无重定位、无 `__DATA`。
+2. `tools/mkpayload.py --ramdisk build/init/init` 把该 Mach-O 作为最后一个 segment
+   追加进 payload（页对齐到 0x4000），并写 ADT 的
+   `/chosen/memory-map: RAMDisk = <phys, size>`。
+3. `setconf()` → `IOFindBSDRoot()` 的 md 分支 `mdevadd(-1, base>>12, size>>12)`
+   生成 `md0`/`rmd0`；`mockfs_check_macho()`（patch 0021 增加）通过 512 字节
+   处的 `feedfacf` 认可它，mockfs 把整块设备当成 `/sbin/launchd` 提供服务，
+   `load_init_program()` 于是 exec 这个静态二进制 → **PID 1 在用户态跑起来**。
+
+mile8（17,674,240B，MD5 `cf711623ed3790b82e35310f8c93583f`）实测屏幕：
+
+```
+SWEET EARLY 54: calling IOFindBSDRoot
+55 IOFindBSDRoot returned
+56 calling vfs_mountroot
+57 root mounted
+58 root vnode obtained
+59 load_init_program
+60 load_init_program returned
+Added memory device md0/rmd0 (01000000/12000000) at FFFFFFE0000...
+BSD root: md0, major 1, minor 0
+VM Swap subsystem is ON
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+load_init_program: attempting to load /sbin/launchd
+*** SWEET userspace: init running as PID 1 ***
+```
+
+没有 panic，init 常驻不退（PID 1 退出会 panic）。至此内核的
+`bsd_init` → `bsd_autoconf` → `vfs_mountroot` → `load_init_program` →
+`execve` → 用户态，整条链第一次走通。
+
+mile7（`rd=md0` 但没有 ramdisk 属性）给出的
+`panic ... md0, has not been configured @IOKitBSDInit.cpp:826` 正好反证了
+ADT 的 `RAMDisk` 属性是 `md0` 存在的唯一来源。
+
+### 13.6 mile9：用户态挂 devfs 探设备节点
+
+init v2 在拿到 console fd 之后调用 `mount("devfs", "/dev")`，再用
+`getdirentries64`（syscall 344）遍历 `/dev` 并把每个 `d_name` 打到控制台，
+最后打印节点个数，然后 5 秒一轮 `select()` 保活。这一步验证 mount / vnode /
+VFS 三层在用户态可用，同时能直接看出哪些驱动真的 publish 了设备节点。
+
+镜像 `shim-boot-mile9.img`（17,674,240B，MD5 `374c74ce02993863bcc200b4e92b96fa`）。
+
+### 13.7 仍然阻塞的部分
+
+- **iOS 根文件系统**：`tools/mkiosroot.sh` 要 apfs 读取工具 + hfsprogs 的卷建立
+  工具 + 能 mount 的 loop 设备，而当前 vm 没有 `/dev/fuse`、
+  没有 `/dev/loop-control`，`/` 只剩 8.6GB（iOS 根要 16GB 以上），
+  所以这条路线在本机做不出来。没有真实 iOS 用户态（launchd / SpringBoard、
+  dyld shared cache、frameworks），当前"用户空间"只是我们自己写的静态 init。
+- **UFS**：`ufs_scsi` 门铃无应答（110 之后挂死），要先补 Qcom 的
+  clk/GDSC/PHY/RPMh，才能谈用分区当根。
+- **驱动**：显示只有 cont_splash 帧缓冲直出，触控（FocalTech FT3658U）只注册
+  未读点，无 RTC、无电量、无按键。
