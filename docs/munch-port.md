@@ -331,3 +331,54 @@ AKS/WDT/SURF/HID/静态电池/CPU 拓扑与 SGI1 自检全部通过，卡在 `bs
 2. 纯用户态 APFS 读取（`libfsapfs` 或自实现）后直接写 HFS+ 镜像，完全绕开 mount，
    但要自己处理 LZBITMAP 压缩，工作量大。
 3. 找一台有完整 Linux 权限的机器（用户自己的 PC 装 WSL2 亦可，本机实测未装 WSL）。
+
+## 12. 持久化内核日志通道：两个被门控掉的开关（2026-11-16 实测）
+
+目标是绕开"拍照读屏"：内核把全部 printf 也写进一个环形缓冲区，再由内核线程定期把它刷到某个分区的尾部，事后用 TWRP 的 root adb 把这段读回来解码。这条链路本身是通的（引导内核对 → 刷日志 → TWRP `dd` 读 1025 块 → 拉到 PC），但连续两次读回都是全 0，最后定位到两处门控：
+
+1. **写权限要显式打开**。`xnu/patches/0030-sweet-ufs-writes.patch` 里写支持由 boot-arg `ufsrw` 决定：`PE_parse_boot_argn("ufsrw", &rw, sizeof(rw)); ... su.writable = (rw != 0);`，而 `sweet_log_start()` 开头就是 `if (!on || !su.writable || ...) return;`。cmdline 里没有 `ufsrw=1` 时分区一律按只读处理，日志线程进去第一句就返回，分区尾部当然全是 0x00 —— 这**不能**当成"内核没跑到 `bsd_init`"的证据。
+2. **分区块数必须 ≥ 2×1025**。同一个 `sweet_log_start()` 里还有 `su.nblocks < 2 * SWEET_LOG_BLOCKS` 的检查（`SWEET_LOG_BLOCKS = 1 + 4MiB/4KiB = 1025`）。munch 的 `logfs`（`/dev/block/sda13`）正好 8,388,608B = **2048** 个 4KiB 块，比 2050 少两块，条件永远不成立。
+
+因此可选的目标分区要同时满足：能被 GPT 按名字找到、块数 ≥ 2050、写它不伤用户数据。munch 上实测的分区尺寸：
+
+| 分区 | 设备 | 大小 | 块数（4KiB） | 备注 |
+| --- | --- | --- | --- | --- |
+| `logfs` | sda13 | 8 MiB | 2048 | 差 2 块，**不够** |
+| `oops` | sda15 | 16 MiB | 4096 | 内核 oops 转储区，够用（当前使用） |
+| `logdump` | sda25 | 64 MiB | 16384 | 备选 |
+| `minidump` | sda26 | 96 MiB | 24576 | 备选 |
+| `userdata` | sda34 | 105.6 GiB | 巨大 | 会写坏用户数据尾部 4MiB，**不要用** |
+
+测法（TWRP 内，root adb）：`blockdev --getsize64 /dev/block/sda15` 得 16777216，`dd if=/dev/block/sda15 of=/tmp/x bs=4096 skip=3071 count=1025` 取出尾部 1025 块（`skip = 总块数 - 1025`），`adb pull` 回 PC 后看头 8 字节是否为 `SWEETLOG`。
+
+**现状**：带 `rd=ufsroot0 ufsroot=oops ufsrw=1 sweetlog=1 ...` 的镜像在真机引导后，`oops` 尾部 MD5 确实变了（基线 `2a467354…` → `b21a119b…`），但整块 16MiB 里搜不到 `SWEETLOG`，里面的内容是 Android 自己的内核 dmesg（MIUI 的 pstore 机制写的）。也就是说：**写进去的是 Android 的日志，不是我们的**，说明这轮内核仍未走到 `sweet_ufs_rootdev()`（该函数在 `IOFindBSDRoot` 里被调用，找不到分区会 `panic`）。
+
+下一步（已实施，等 CI 出内核）：见第 13 节。
+
+## 13. 屏幕里程碑（patch 0082）：用编号代替猜
+
+"屏幕停在 `mig_table_max_displ = 54 mach_kobj_count = 374`"这件事一直无法解释：从该打印点到 `bsd_init` 之间，xnu 原本就没有无条件 printf；而帧缓冲控制台写满会回绕，屏幕从上到下不能当执行顺序。与其继续从照片里猜，不如让内核自己报进度。
+
+已有机制：`xnu/patches/0010` 的 `sweet_early.c` 直接往 cont_splash 帧缓冲（PA `0x9c000000`）画字，`0012` 在拆掉 bootstrap TTBR0 之前把这块的 VA 重映射到 `VM_MIN_KERNEL_ADDRESS + ARM_TT_L2_SIZE` 的内核别名，所以打点在 `arm_vm_init` 之后依然有效。但 `0012` 在 `arm_init.c` 里加了一句 `if (serial_exists) { sweet_early_disable(); }` —— 我们的 fbcon 在 `serial_init()` 里当作串口注册成功，于是打点恰好在 stage 20（`kprintf startup complete`）被关掉，之后屏幕上再也没有打点。
+
+patch 0082 做三件事：
+
+1. `arm_init.c`：不再因为 `serial_exists` 关闭打点（`earlyfb=0` 可恢复旧行为）。
+2. `sweet_early.c`：允许 stage 到 99，底部色块按 `stage % 22` 重排，避免 stage 变大后写到屏幕外。
+3. `startup.c` 与 `bsd_init.c`：在 `kernel_bootstrap()`、`kernel_bootstrap_thread()`、`bsd_init()` 的每一步后面各打一个编号，共 40 个：
+
+| 编号 | 位置 |
+| --- | --- |
+| 21–22 | `console_init` / `sched_init` 之后 |
+| 23 | `STARTUP_SUB_MACH_IPC` 全部跑完（就是 `mig_table_max_displ` 那句的来源） |
+| 24–28 | `PMAP_ACTIVATE_KERNEL` / `mapping_free_prime` / `machine_init` / `thread_machine_init_template` / `clock_init` |
+| 29–31 | `task_init` / `thread_init` / `workq_init` |
+| 32–33 | 创建 bootstrap 线程、`load_context` |
+| 34–40 | `idle_thread_create` / `sched_startup` / `thread_daemon_init` / `STARTUP_SUB_THREAD_CALL` / `mapping_adjust` / `clock_service_create` / `device_service_create` |
+| 41–44 | `kdp_init` / `STARTUP_SUB_SYSCTL` / `PE_init_iokit` / `STARTUP_SUB_EARLY_BOOT` |
+| 45–50 | `initialize_screen` / commpage / `STARTUP_SUB_LOCKDOWN` / `OSKextRemoveKextBootstrap` / `machine_lockdown` / `PE_lockdown_iokit` |
+| 51–53 | 进入 `bsd_init` / `bsd_init` 开头 / `bsd_autoconf`（内含 `IOKitBSDInit`，也就是 UFS 根分区打开与日志线程启动的地方） |
+| 54–57 | `IOFindBSDRoot` 前后、`vfs_mountroot` 前后 |
+| 58–60 | 拿到根 vnode / `load_init_program` 前后 |
+
+屏幕上最后一个编号就是真正卡住的位置，比任何照片堆栈都可靠。补丁已在模拟树上验证可干净应用（4 个文件 26 个 hunk），本地克隆里 commit `4e8f1c2`，CI 正在编。
