@@ -1,0 +1,36 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 24f1abc..28ecf10 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1873,6 +1873,15 @@ sleh_irq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
++#if defined(SWEET)
++		{
++			extern void sweet_early_mark(unsigned int, const char *);
++			static unsigned int sweet_tick_count;
++			if ((++sweet_tick_count & 0xffu) == 0) {
++				sweet_early_mark(700u + ((sweet_tick_count >> 8) % 200u), "tick");
++			}
++		}
++#endif
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+@@ -2002,6 +2011,15 @@ sleh_fiq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
++#if defined(SWEET)
++		{
++			extern void sweet_early_mark(unsigned int, const char *);
++			static unsigned int sweet_tick_count;
++			if ((++sweet_tick_count & 0xffu) == 0) {
++				sweet_early_mark(700u + ((sweet_tick_count >> 8) % 200u), "tick");
++			}
++		}
++#endif
+ 	}
+ 
+ #if APPLEVIRTUALPLATFORM
