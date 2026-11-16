@@ -463,3 +463,31 @@ patch 0084：SWEET 下跳过 `IORTC` 的等待（保留 `clock_initialize_calend
 
 patch 0085 在循环里给每一项打一个编号 `80 + idx`（80–93），循环后的 `pseudo_inits done` 顺延为 94，`IOKitBSDInit` 前后为 95/96，`bsd_autoconf` 返回为 97。谁开始打点后就再无下文，谁就是卡住的那一项。
 
+### 13.4 第四个断点：`IOFindBSDRoot()` 里的 UFS 初始化
+
+`shim-boot-mile5.img`（MD5 `b4a03ec9…`）把 80–97 全打出来了（14 个 `pseudo_init` 全部通过，`IOKitBSDInit` 也回来了），接着打出 **54 `calling IOFindBSDRoot`**，然后没有下文。也就是说内核走到了 `bsd_init()` 的 `setconf()`，正在找根设备。
+
+`rd=ufsroot0` 走 patch 0028 的钩子：`sweet_ufs_rootdev()` → 第一次调用就进 `sweet_ufs_init()`（`bsd/dev/sweet_ufs.c`），里面依次是 DT 查 `/sweet-ufs`、`ml_io_map` 寄存器、`kmem_alloc_contig` 拿连续 DMA、`ufs_take_over_host()` 抢 host（第一次 MMIO 读 `REG_HCE`/`REG_HCS`）、发一条 TUR、再读 GPT 找分区。
+
+这一段同样零日志，而且任何一步都可能是"总线卡死"（UFS 的时钟/电源由 bootloader 掌管，我们引导自建内核时 clk/gdsc 未必是开着的，MMIO 读可能永远不返回）。patch 0086 给这条链上每一步编号 100–114，并把 `sweet_early_mark` 三位数上限从 99 抬到 999：
+
+| 编号 | 含义 |
+| --- | --- |
+| 100 | `sweet_ufs_init` 进入 |
+| 101 | DT 里找到了 `/sweet-ufs` |
+| 102 | 寄存器映射完成 |
+| 103 | 连续 DMA 分配完成 |
+| 104 | 准备抢 host（`ufs_take_over_host`） |
+| 105 | 即将第一次读 `REG_HCE` |
+| 106 | `HCE`/`HCS` 读到了 |
+| 107 | UTRL 表已装好 |
+| 108 | 抢 host 成功 |
+| 109 | 开始读 GPT |
+| 110 | 每次 SCSI 命令敲门铃前 |
+| 111 | 每次 SCSI 命令看到完成 |
+| 112 | GPT 搜完 |
+| 113 | 块设备/字符设备已注册 |
+| 114 | `su.ready = true`（根设备可用） |
+
+下一步就看它停在 105（MMIO 读死了）、110/111（doorbell 没被硬件应答）还是 112 之后。
+
