@@ -1,22 +1,21 @@
 /*
- * SWEET bring-up init v16: does the forked child ever run?
+ * SWEET bring-up init v17: what did wait4 see?
  *
- * v14: fork returned the parent branch (x0 = child pid, no error) but the child
- *      never wrote a byte.
- * v15: execve("/sbin/launchd") works -- the blob restarts itself forever, so a
- *      fresh image loads fine and process replacement is functional.
+ * v16's dots filled the screen, which means wait4 returned instead of blocking --
+ * the forked child was already gone.  This version stops talking after the
+ * verdict, so the numbers survive on screen:
  *
- * So the open question is exactly "was the child ever scheduled?".  This version
- * gives that question a unique signature:
+ *   *** SWEET userspace v17: fork+exec, wait4 ***
+ *    P001              parent pid
+ *    W###              raw wait status  (low 7 bits = signal, bits 8..15 = exit code)
+ *    R###              wait4's return value
+ *    E### (only when carry was set)  errno
+ *   then silence.
  *
- *   *** SWEET userspace v16: fork+exec ***
- *    P001        parent, pid 1, now parked in wait4(child)
- *    C###        child, its own pid, then it execve()s /sbin/launchd
- *
- * If the child runs at all, its exec loop floods the screen with banners -- the
- * parent's single line cannot be confused with that.  If the screen stays put
- * after "P001", the child was created but never scheduled.
- * When wait4 returns, the parent prints " W###" with the wait status.
+ * Reading it: signal 4 SIGILL / 5 SIGTRAP / 6 SIGABRT / 10 SIGBUS / 11 SIGSEGV
+ * tell us the child died of an exception, an exit code in bits 8..15 means it
+ * exited by itself, and ECHILD (10 on Darwin/BSD? no -- 4) means it was never
+ * there at all.
  */
 #define SYS_write		4
 #define SYS_open		5
@@ -50,7 +49,7 @@ _start:
 	b.cs	frk_fail
 	cbnz	x0, parent
 
-	/* ---- child ---- */
+	/* ---- child: say who we are, then swap ourselves out ---- */
 	bl	p_sp
 	adr	x1, s_C
 	adr	x2, s_C_end
@@ -73,6 +72,7 @@ _start:
 	mov	x16, #SYS_execve
 	svc	#0x80
 	b.cc	hang
+	mov	x20, x0			/* errno of the first attempt */
 
 	adr	x0, path_init2
 	mov	x1, sp
@@ -81,18 +81,16 @@ _start:
 	svc	#0x80
 	b.cc	hang
 
+	/* exec failed inside the child: report and stop */
 	bl	p_sp
 	adr	x1, s_F
 	adr	x2, s_F_end
 	sub	x2, x2, x1
 	bl	write_console
+	mov	x0, x20
+	bl	write_dec
 	bl	write_nl
-child_dots:
-	adr	x1, s_c
-	adr	x2, s_c_end
-	sub	x2, x2, x1
-	bl	write_console
-	b	child_dots
+	b	hang
 
 	/* ---- parent ---- */
 parent:
@@ -107,13 +105,16 @@ parent:
 	bl	write_dec
 	bl	write_nl
 
-	sub	sp, sp, #64		/* wait status lives at [sp] */
+	sub	sp, sp, #64
+	str	xzr, [sp]
 	mov	x0, x21
 	mov	x1, sp
 	mov	x2, #0
 	mov	x3, #0
 	mov	x16, #SYS_wait4
 	svc	#0x80
+	mov	x22, x0			/* return value (pid or -1) */
+	cset	x23, cs			/* carry set => error */
 
 	bl	p_sp
 	adr	x1, s_W
@@ -122,15 +123,29 @@ parent:
 	bl	write_console
 	ldr	x0, [sp]
 	bl	write_dec
-	add	sp, sp, #64
 	bl	write_nl
 
-parent_dots:
-	adr	x1, s_B
-	adr	x2, s_B_end
+	bl	p_sp
+	adr	x1, s_R
+	adr	x2, s_R_end
 	sub	x2, x2, x1
 	bl	write_console
-	b	parent_dots
+	mov	x0, x22
+	bl	write_dec
+	bl	write_nl
+
+	add	sp, sp, #64
+
+	cbz	x23, hang		/* no error, nothing more to say */
+
+	bl	p_sp
+	adr	x1, s_E
+	adr	x2, s_E_end
+	sub	x2, x2, x1
+	bl	write_console
+	bl	write_dec
+	bl	write_nl
+	b	hang
 
 frk_fail:
 	bl	p_sp
@@ -139,7 +154,7 @@ frk_fail:
 	sub	x2, x2, x1
 	bl	write_console
 	bl	write_nl
-	b	parent_dots
+	b	hang
 
 p_banner:
 	stp	x29, x30, [sp, #-16]!
@@ -211,32 +226,32 @@ path_init2:
 s_init:
 	.asciz	"init"
 s_banner:
-	.ascii	"\n*** SWEET userspace v16: fork+exec ***\n"
+	.ascii	"\n*** SWEET userspace v17: fork+exec, wait4 ***\n"
 s_banner_end:
 s_space:
 	.ascii	" "
 s_space_end:
 s_P:
-	.ascii	" P"
+	.ascii	"P"
 s_P_end:
 s_C:
-	.ascii	" C"
+	.ascii	"C"
 s_C_end:
 s_W:
-	.ascii	" W"
+	.ascii	"W"
 s_W_end:
+s_R:
+	.ascii	"R"
+s_R_end:
+s_E:
+	.ascii	"E"
+s_E_end:
 s_F:
-	.ascii	" F"
+	.ascii	"F"
 s_F_end:
 s_EF:
-	.ascii	" ERRF"
+	.ascii	"ERRF"
 s_EF_end:
 s_nl:
 	.ascii	"\n"
 s_nl_end:
-s_c:
-	.ascii	"c"
-s_c_end:
-s_B:
-	.ascii	"."
-s_B_end:

@@ -644,3 +644,12 @@ pid 一直是 1，说明 `execve` 真的把当前进程的映像换掉了 ——
 （原因是 init 自己就是那个 blob，execve 之后它又执行同一段代码，于是无限循环。）
 
 镜像 `shim-boot-mile22.img`（17,674,240B，MD5 `d07e2c5bf548ae8ecd7402b9b26093a5`）。
+
+### 13.11 mile23：fork 出来的子进程已经死掉
+
+init v16 在 fork 之后让子进程立刻 `execve("/sbin/launchd")`、父进程停在
+`wait4(child)` 上。屏幕结果是一整屏的 `.`（父进程的等待返回后才开始打点）
+—— **`wait4` 没有阻塞，说明子进程在被调度之前/之际就已经消亡**。
+（`execve` 本身没问题，mile22 已证明；问题只出在 fork 出来的第二个任务。）
+
+镜像 `shim-boot-mile23.img`（17,674,240B，MD5 `1d4827e1f5e2c8701ef228e6893e18e5`）。
