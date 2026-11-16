@@ -438,3 +438,28 @@ patch 0084：SWEET 下跳过 `IORTC` 的等待（保留 `clock_initialize_calend
 
 顺带说明一个设计后果：现在内核没有真实墙上时间，`clock_initialize_calendar()` 会以 1970 年或 boot 时间为基准。等以后接了 PMIC RTC（或从 shim 塞一个 RTC 资源）再补。
 
+### 13.3 第三个断点：`bsd_autoconf()` 的 `pseudo_inits` 循环
+
+跳过 `IORTC` 之后（`shim-boot-mile4.img`，MD5 `84fd7ba4…`），编号一路走到 **79 `kminit done`**，然后停在 `pseudo_inits` 循环里——80 号（`pseudo_inits done`）没出现。
+
+`pseudo_inits[]` 是 `mkioconf` 从配置生成的（`build/xnu.obj/DEVELOPMENT_ARM64_SWEET/bsd/DEVELOPMENT/ioconf.c`），SWEET 上一共 14 项：
+
+| idx | 函数 | 参数 |
+| --- | --- | --- |
+| 0 | `pty_init` | 128 |
+| 1 | `ptmx_init` | 1 |
+| 2 | `mdevinit` | 1 |
+| 3 | `bpf_init` | 4 |
+| 4 | `fsevents_init` | 1 |
+| 5 | `random_init` | 1 |
+| 6 | `dtrace_init` | 1 |
+| 7 | `helper_init` | 1 |
+| 8 | `lockstat_init` | 1 |
+| 9 | `lockprof_init` | 1 |
+| 10 | `sdt_init` | 1 |
+| 11 | `systrace_init` | 1 |
+| 12 | `fbt_init` | 1 |
+| 13 | `profile_init` | 1 |
+
+patch 0085 在循环里给每一项打一个编号 `80 + idx`（80–93），循环后的 `pseudo_inits done` 顺延为 94，`IOKitBSDInit` 前后为 95/96，`bsd_autoconf` 返回为 97。谁开始打点后就再无下文，谁就是卡住的那一项。
+

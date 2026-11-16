@@ -1,0 +1,47 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 6eb2c51..ad84595 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -855,7 +855,7 @@ bsd_init(void)
+ 	bsd_init_kprintf("calling bsd_autoconf\n");
+ 	bsd_autoconf();
+ #if defined(SWEET)
+-	sweet_early_mark(53, "bsd_autoconf + IOKitBSDInit done");
++	sweet_early_mark(97, "bsd_autoconf + IOKitBSDInit done");
+ #endif
+ 
+ #if CONFIG_DTRACE
+@@ -1194,23 +1194,30 @@ bsd_autoconf(void)
+ 	 */
+ 	{
+ 		struct pseudo_init *pi;
++#if defined(SWEET)
++		int sweet_pi_idx = 0;
++#endif
+ 
+ 		for (pi = pseudo_inits; pi->ps_func; pi++) {
++#if defined(SWEET)
++			sweet_early_mark(80 + sweet_pi_idx, "pseudo_init start");
++			sweet_pi_idx++;
++#endif
+ 			(*pi->ps_func)(pi->ps_count);
+ 		}
+ 	}
+ #if defined(SWEET)
+ 	extern void sweet_early_mark(unsigned int, const char *);
+-	sweet_early_mark(80, "pseudo_inits done");
++	sweet_early_mark(94, "pseudo_inits done");
+ #endif
+ #if defined(SWEET)
+ 	extern void sweet_early_mark(unsigned int, const char *);
+-	sweet_early_mark(81, "calling IOKitBSDInit");
++	sweet_early_mark(95, "calling IOKitBSDInit");
+ #endif
+ 	kern_return_t __sweet_kr = IOKitBSDInit();
+ #if defined(SWEET)
+ 	extern void sweet_early_mark(unsigned int, const char *);
+-	sweet_early_mark(82, "IOKitBSDInit done");
++	sweet_early_mark(96, "IOKitBSDInit done");
+ #endif
+ 	return __sweet_kr;
+ }
