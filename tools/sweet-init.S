@@ -1,26 +1,27 @@
 /*
- * SWEET bring-up init v15: execve
+ * SWEET bring-up init v16: does the forked child ever run?
  *
- * v14 showed argc = 0 (a flat LC_UNIXTHREAD binary gets no argv), and that a
- * successful fork() only came back on the parent side -- the child never wrote
- * a byte.  So process *creation* is the open question, and the shortest way to
- * answer it is execve: replace this very process with a fresh load of the same
- * blob out of mockfs.
+ * v14: fork returned the parent branch (x0 = child pid, no error) but the child
+ *      never wrote a byte.
+ * v15: execve("/sbin/launchd") works -- the blob restarts itself forever, so a
+ *      fresh image loads fine and process replacement is functional.
  *
- * The boot log tried two paths in order, so the loader settled on the second:
- *     attempting to load /usr/appleinternal/sbin/launchd.development
- *     attempting to load /sbin/launchd
- * That is where mockfs serves our init, so execve("/sbin/launchd") re-loads it.
+ * So the open question is exactly "was the child ever scheduled?".  This version
+ * gives that question a unique signature:
  *
- *   *** SWEET userspace v15: execve ***
- *   E001  first run, pid 1, now trying to exec
- *   (on failure) F<errno>  then dots forever
+ *   *** SWEET userspace v16: fork+exec ***
+ *    P001        parent, pid 1, now parked in wait4(child)
+ *    C###        child, its own pid, then it execve()s /sbin/launchd
  *
- * If execve succeeds the image restarts itself: the banner and "E" line appear
- * again, endlessly.  A flood of banners and no "F" proves exec works.
+ * If the child runs at all, its exec loop floods the screen with banners -- the
+ * parent's single line cannot be confused with that.  If the screen stays put
+ * after "P001", the child was created but never scheduled.
+ * When wait4 returns, the parent prints " W###" with the wait status.
  */
 #define SYS_write		4
 #define SYS_open		5
+#define SYS_fork		2
+#define SYS_wait4		7
 #define SYS_getpid		20
 #define SYS_execve		59
 #define O_RDONLY		0
@@ -43,9 +44,16 @@ _start:
 	mov	x19, x0
 
 	bl	p_banner
+
+	mov	x16, #SYS_fork
+	svc	#0x80
+	b.cs	frk_fail
+	cbnz	x0, parent
+
+	/* ---- child ---- */
 	bl	p_sp
-	adr	x1, s_E
-	adr	x2, s_E_end
+	adr	x1, s_C
+	adr	x2, s_C_end
 	sub	x2, x2, x1
 	bl	write_console
 	mov	x16, #SYS_getpid
@@ -53,7 +61,6 @@ _start:
 	bl	write_dec
 	bl	write_nl
 
-	/* build argv/envp on the stack, well below sp */
 	sub	sp, sp, #64
 	adr	x3, s_init
 	str	x3, [sp]
@@ -65,10 +72,8 @@ _start:
 	add	x2, sp, #16
 	mov	x16, #SYS_execve
 	svc	#0x80
-	b.cc	hang			/* success never returns */
-	mov	x20, x0			/* errno */
+	b.cc	hang
 
-	/* second candidate path */
 	adr	x0, path_init2
 	mov	x1, sp
 	add	x2, sp, #16
@@ -76,22 +81,65 @@ _start:
 	svc	#0x80
 	b.cc	hang
 
-	/* both failed: report the first errno, then keep ticking */
 	bl	p_sp
 	adr	x1, s_F
 	adr	x2, s_F_end
 	sub	x2, x2, x1
 	bl	write_console
-	mov	x0, x20
+	bl	write_nl
+child_dots:
+	adr	x1, s_c
+	adr	x2, s_c_end
+	sub	x2, x2, x1
+	bl	write_console
+	b	child_dots
+
+	/* ---- parent ---- */
+parent:
+	mov	x21, x0			/* child pid */
+	bl	p_sp
+	adr	x1, s_P
+	adr	x2, s_P_end
+	sub	x2, x2, x1
+	bl	write_console
+	mov	x16, #SYS_getpid
+	svc	#0x80
 	bl	write_dec
 	bl	write_nl
 
-dot_loop:
-	adr	x1, s_dot
-	adr	x2, s_dot_end
+	sub	sp, sp, #64		/* wait status lives at [sp] */
+	mov	x0, x21
+	mov	x1, sp
+	mov	x2, #0
+	mov	x3, #0
+	mov	x16, #SYS_wait4
+	svc	#0x80
+
+	bl	p_sp
+	adr	x1, s_W
+	adr	x2, s_W_end
 	sub	x2, x2, x1
 	bl	write_console
-	b	dot_loop
+	ldr	x0, [sp]
+	bl	write_dec
+	add	sp, sp, #64
+	bl	write_nl
+
+parent_dots:
+	adr	x1, s_B
+	adr	x2, s_B_end
+	sub	x2, x2, x1
+	bl	write_console
+	b	parent_dots
+
+frk_fail:
+	bl	p_sp
+	adr	x1, s_EF
+	adr	x2, s_EF_end
+	sub	x2, x2, x1
+	bl	write_console
+	bl	write_nl
+	b	parent_dots
 
 p_banner:
 	stp	x29, x30, [sp, #-16]!
@@ -163,20 +211,32 @@ path_init2:
 s_init:
 	.asciz	"init"
 s_banner:
-	.ascii	"\n*** SWEET userspace v15: execve ***\n"
+	.ascii	"\n*** SWEET userspace v16: fork+exec ***\n"
 s_banner_end:
 s_space:
 	.ascii	" "
 s_space_end:
-s_E:
-	.ascii	"E"
-s_E_end:
+s_P:
+	.ascii	" P"
+s_P_end:
+s_C:
+	.ascii	" C"
+s_C_end:
+s_W:
+	.ascii	" W"
+s_W_end:
 s_F:
-	.ascii	"F"
+	.ascii	" F"
 s_F_end:
+s_EF:
+	.ascii	" ERRF"
+s_EF_end:
 s_nl:
 	.ascii	"\n"
 s_nl_end:
-s_dot:
+s_c:
+	.ascii	"c"
+s_c_end:
+s_B:
 	.ascii	"."
-s_dot_end:
+s_B_end:

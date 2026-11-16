@@ -625,3 +625,22 @@ init v14 先读入口寄存器再看 fork：
   验证 `execve`（比 fork 更直接：用一个新加载的镜像替换当前进程）。
 
 镜像 `shim-boot-mile21.img`（17,674,240B，MD5 `0b54584a76b0af4834cdb4bc44497daa`）。
+
+### 13.10 mile22：execve 通了
+
+init v15 直接 `execve("/sbin/launchd", argv, envp)`（路径取自内核日志里成功的那一条）。
+结果是**满屏反复重载自己**：
+
+```
+*** SWEET userspace v15: execve ***
+E001
+*** SWEET userspace v15: execve ***
+E001
+...
+```
+
+pid 一直是 1，说明 `execve` 真的把当前进程的映像换掉了 —— mockfs 上的 Mach-O
+能被 exec 正常读入、映射、重新进入，进程替换这条链完全可用。
+（原因是 init 自己就是那个 blob，execve 之后它又执行同一段代码，于是无限循环。）
+
+镜像 `shim-boot-mile22.img`（17,674,240B，MD5 `d07e2c5bf548ae8ecd7402b9b26093a5`）。
