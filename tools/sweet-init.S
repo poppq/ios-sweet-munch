@@ -10,7 +10,7 @@
  * Branching by process identity instead of by the fork return value fixes it:
  * read getpid() before fork, compare after.
  *
- *   *** SWEET userspace v18: two processes ***
+ *   *** SWEET userspace v19: two processes, yielding ***
  *    P001        parent, pid 1
  *    C002        child, pid 2
  *   then the parent writes "P" and the child writes "c" without pausing, so an
@@ -21,6 +21,7 @@
 #define SYS_open		5
 #define SYS_fork		2
 #define SYS_getpid		20
+#define SYS_select		93
 #define O_RDONLY		0
 #define O_RDWR			2
 
@@ -70,6 +71,7 @@ child_loop:
 	adr	x2, s_c_end
 	sub	x2, x2, x1
 	bl	write_console
+	bl	yield_tick
 	b	child_loop
 
 	/* ---- parent ---- */
@@ -87,6 +89,7 @@ parent_loop:
 	adr	x2, s_B_end
 	sub	x2, x2, x1
 	bl	write_console
+	bl	yield_tick
 	b	parent_loop
 
 frk_fail:
@@ -155,6 +158,28 @@ write_dec:
 	ldp	x29, x30, [sp], #16
 	ret
 
+
+/* select(nfds=0, NULL, NULL, NULL, 0.2 s) -- a real kernel entry, so the
+ * scheduler gets a chance to switch to the other task.  A tight write loop
+ * starves the child on a single CPU. */
+yield_tick:
+	stp	x29, x30, [sp, #-16]!
+	sub	sp, sp, #32
+	str	xzr, [sp]		/* tv_sec  = 0 */
+	movz	x9, #0x30D4
+	lsl	x9, x9, #4		/* tv_usec = 200000 */
+	str	w9, [sp, #8]
+	mov	x0, #0
+	mov	x1, #0
+	mov	x2, #0
+	mov	x3, #0
+	mov	x4, sp
+	mov	x16, #SYS_select
+	svc	#0x80
+	add	sp, sp, #32
+	ldp	x29, x30, [sp], #16
+	ret
+
 hang:
 	b	hang
 
@@ -162,7 +187,7 @@ hang:
 path_console:
 	.asciz	"/dev/console"
 s_banner:
-	.ascii	"\n*** SWEET userspace v18: two processes ***\n"
+	.ascii	"\n*** SWEET userspace v19: two processes, yielding ***\n"
 s_banner_end:
 s_space:
 	.ascii	" "
