@@ -605,3 +605,23 @@ VFS 三层在用户态可用，同时能直接看出哪些驱动真的 publish �
 6. 待办：`ENTRY_MAX` 放开后再数一次总数；`read`/`ioctl`/`fork`/`execve`
    逐个验证；然后才是把真实 iOS 根塞进内存盘（受 boot.img payload 体积限制）
    或者回头把 UFS 补活（受 Qcom clk/PHY/RPMh 限制）。
+
+### 13.9 mile21：fork 只回到父进程，argc 恒 0
+
+init v14 先读入口寄存器再看 fork：
+
+- 屏幕 `n000 path:` —— **argc 恒为 0**，`argv[0]` 为空。`mkinit.py` 生成的
+  扁平 `LC_UNIXTHREAD` 二进制拿不到参数栈，内核在这条路径上只把 x0 置 0。
+  所以想靠 argv 反查"init 从哪个路径被加载"不可行；路径只能从内核日志看：
+  `attempting to load /usr/appleinternal/sbin/launchd.development` 失败后
+  `attempting to load /sbin/launchd` 成功，mockfs 的 blob 就挂在 `/sbin/launchd`。
+- 屏幕 `P001` 之后是满屏连续的 `P`，**没有 `C###`、也没有 `ERRfork`**：
+  即 `fork()` 返回了"父进程"分支（x0 为子进程 pid，非 0，未进位），
+  但子进程一个字节都没打出来。当场有两个疑点：
+  1. 子任务从未被调度，或已立刻死掉（无输出、无 panic）。
+  2. 打 P 的密度远超 0.5s 一拍 —— 说明 EL0 的 `cntvct_el0` 读不到推进值
+     （很可能被 hypervisor 层 trap 或恒 0），`busy_wait` 实际没等到任何时间。
+  结论：**进程创建这条链还没打通**，而 launchd 一定需要它，所以下一轮先单独
+  验证 `execve`（比 fork 更直接：用一个新加载的镜像替换当前进程）。
+
+镜像 `shim-boot-mile21.img`（17,674,240B，MD5 `0b54584a76b0af4834cdb4bc44497daa`）。
