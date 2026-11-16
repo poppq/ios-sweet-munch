@@ -1,0 +1,366 @@
+Subject: [PATCH] sweet: numbered on-screen milestones through bsd_init
+
+The fbcon "serial" console on munch goes quiet right after the
+STARTUP_SUB_MACH_IPC entries, and the persistent-log ring only starts once
+bsd_init opens the UFS partition, so a stalled boot leaves no evidence of
+where it stopped. Keep the direct framebuffer writer alive past stage 20
+(it used to be disabled as soon as serial_init() reported success) and drop
+a numbered mark after every step of kernel_bootstrap(),
+kernel_bootstrap_thread() and bsd_init(). The last mark on screen names
+the step that hung. Boot with earlyfb=0 to restore the old behaviour.
+
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 95c2429..0e89d10 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -501,6 +501,10 @@ bsd_init(void)
+ 	throttle_init();
+ 
+ 	printf(copyright);
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(52, "bsd_init entered");
++#endif
+ 
+ #if CONFIG_DEV_KMEM
+ 	bsd_init_kprintf("calling dev_kmem_init\n");
+@@ -793,6 +797,9 @@ bsd_init(void)
+ 
+ 	bsd_init_kprintf("calling bsd_autoconf\n");
+ 	bsd_autoconf();
++#if defined(SWEET)
++	sweet_early_mark(53, "bsd_autoconf + IOKitBSDInit done");
++#endif
+ 
+ #if CONFIG_DTRACE
+ 	dtrace_postinit();
+@@ -873,7 +880,13 @@ bsd_init(void)
+ #endif
+ 
+ 		bsd_init_kprintf("vfs_mountroot\n");
++#if defined(SWEET)
++		sweet_early_mark(56, "calling vfs_mountroot");
++#endif
+ 		if (0 == (err = vfs_mountroot())) {
++#if defined(SWEET)
++			sweet_early_mark(57, "root mounted");
++#endif
+ 			break;
+ 		}
+ 		rootdevice[0] = '\0';
+@@ -904,6 +917,9 @@ bsd_init(void)
+ 	}
+ 	(void)vnode_ref(init_rootvnode);
+ 	(void)vnode_put(init_rootvnode);
++#if defined(SWEET)
++	sweet_early_mark(58, "root vnode obtained");
++#endif
+ 
+ 	lck_rw_lock_exclusive(&rootvnode_rw_lock);
+ 	set_rootvnode(init_rootvnode);
+@@ -1092,7 +1108,13 @@ bsdinit_task(void)
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++#if defined(SWEET)
++	sweet_early_mark(59, "load_init_program");
++#endif
+ 	load_init_program(p);
++#if defined(SWEET)
++	sweet_early_mark(60, "load_init_program returned");
++#endif
+ 	lock_trace = 1;
+ }
+ 
+@@ -1125,7 +1147,13 @@ setconf(void)
+ 	u_int32_t       flags;
+ 	kern_return_t   err;
+ 
++#if defined(SWEET)
++	sweet_early_mark(54, "calling IOFindBSDRoot");
++#endif
+ 	err = IOFindBSDRoot(rootdevice, sizeof(rootdevice), &rootdev, &flags);
++#if defined(SWEET)
++	sweet_early_mark(55, "IOFindBSDRoot returned");
++#endif
+ 	if (err) {
+ 		printf("setconf: IOFindBSDRoot returned an error (%d);"
+ 		    "setting rootdevice to 'sd0a'.\n", err);     /* XXX DEBUG TEMP */
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 5a1592a..28fcc9e 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -541,8 +541,19 @@ arm_init(
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
+ 	kprintf("kprintf initialized\n");
+ 	sweet_early_mark(20, "kprintf startup complete");
+-	if (serial_exists) {
+-		sweet_early_disable();
++	/*
++	 * SWEET: keep the direct framebuffer writer alive. The fbcon "serial"
++	 * console stops producing output shortly after the MACH_IPC startup
++	 * entries, so stage marks are the only evidence of boot progress.
++	 * earlyfb=0 restores the old behaviour.
++	 */
++	{
++		uint32_t earlyfb = 1;
++		if (!PE_parse_boot_argn("earlyfb", &earlyfb, sizeof(earlyfb)) || earlyfb) {
++			/* stay enabled */
++		} else {
++			sweet_early_disable();
++		}
+ 	}
+ 
+ 	serialmode = 0;
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 6928957..1e65cf3 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -89,12 +89,13 @@ sweet_early_string(const char *s)
+ void
+ sweet_early_mark(unsigned int stage, const char *label)
+ {
+-	if (early_disabled || stage > 20) {
++	if (early_disabled || stage > 99) {
+ 		return;
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
++	unsigned int bar = stage % 22;
+ 	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
+-		for (unsigned int x = stage * 48; x < (stage + 1) * 48; x++) {
++		for (unsigned int x = bar * 48; x < bar * 48 + 44; x++) {
+ 			EARLY_FB[y * EARLY_STRIDE + x] = color;
+ 		}
+ 	}
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index bec97fb..8ac95ef 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -87,6 +87,12 @@
+ #include <kern/restartable.h>
+ #include <kern/sched_prim.h>
+ #include <kern/turnstile.h>
++#if defined(SWEET)
++#include <arm64/sweet_early.h>
++#define SWEET_MILE(n, str)      sweet_early_mark(n, str)
++#else
++#define SWEET_MILE(n, str)      do { } while (0)
++#endif
+ #if CONFIG_SCHED_SFI
+ #include <kern/sfi.h>
+ #endif
+@@ -476,12 +482,14 @@ kernel_bootstrap(void)
+ 
+ 	kernel_bootstrap_log("console_init");
+ 	console_init();
++	SWEET_MILE(21, "console_init done");
+ 
+ 	kernel_bootstrap_log("stackshot_init");
+ 	stackshot_init();
+ 
+ 	kernel_bootstrap_log("sched_init");
+ 	sched_init();
++	SWEET_MILE(22, "sched_init done");
+ 
+ #if CONFIG_MACF
+ 	kernel_bootstrap_log("mac_policy_init");
+@@ -489,6 +497,7 @@ kernel_bootstrap(void)
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_MACH_IPC);
++	SWEET_MILE(23, "STARTUP_SUB_MACH_IPC done");
+ 
+ 	/*
+ 	 * As soon as the virtual memory system is up, we record
+@@ -496,18 +505,23 @@ kernel_bootstrap(void)
+ 	 */
+ 	kernel_bootstrap_log("PMAP_ACTIVATE_KERNEL");
+ 	PMAP_ACTIVATE_KERNEL(master_cpu);
++	SWEET_MILE(24, "PMAP_ACTIVATE_KERNEL done");
+ 
+ 	kernel_bootstrap_log("mapping_free_prime");
+ 	mapping_free_prime();                                           /* Load up with temporary mapping blocks */
++	SWEET_MILE(25, "mapping_free_prime done");
+ 
+ 	kernel_bootstrap_log("machine_init");
+ 	machine_init();
++	SWEET_MILE(26, "machine_init done");
+ 
+ 	kernel_bootstrap_log("thread_machine_init_template");
+ 	thread_machine_init_template();
++	SWEET_MILE(27, "thread_machine_init_template done");
+ 
+ 	kernel_bootstrap_log("clock_init");
+ 	clock_init();
++	SWEET_MILE(28, "clock_init done");
+ 
+ 	/*
+ 	 *	Initialize the IPC, task, and thread subsystems.
+@@ -528,15 +542,18 @@ kernel_bootstrap(void)
+ 
+ 	kernel_bootstrap_log("task_init");
+ 	task_init();
++	SWEET_MILE(29, "task_init done");
+ 
+ 	kernel_bootstrap_log("thread_init");
+ 	thread_init();
++	SWEET_MILE(30, "thread_init done");
+ 
+ 	kernel_bootstrap_log("restartable_init");
+ 	restartable_init();
+ 
+ 	kernel_bootstrap_log("workq_init");
+ 	workq_init();
++	SWEET_MILE(31, "workq_init done");
+ 
+ 	kernel_bootstrap_log("turnstiles_init");
+ 	turnstiles_init();
+@@ -561,6 +578,7 @@ kernel_bootstrap(void)
+ 	 */
+ 
+ 	kernel_bootstrap_log("kernel_thread_create");
++	SWEET_MILE(32, "creating bootstrap thread");
+ 	result = kernel_thread_create((thread_continue_t)kernel_bootstrap_thread, NULL, MAXPRI_KERNEL, &thread);
+ 
+ 	if (result != KERN_SUCCESS) {
+@@ -575,6 +593,7 @@ kernel_bootstrap(void)
+ 	thread_deallocate(thread);
+ 
+ 	kernel_bootstrap_log("load_context - done");
++	SWEET_MILE(33, "load_context of bootstrap thread");
+ 	load_context(thread);
+ 	/*NOTREACHED*/
+ }
+@@ -598,6 +617,7 @@ kernel_bootstrap_thread(void)
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_KERNEL_BOOTSTRAP);
+ #endif
+ 
++	SWEET_MILE(34, "in bootstrap thread");
+ 	kernel_bootstrap_thread_log("idle_thread_create");
+ 	/*
+ 	 * Create the idle processor thread.
+@@ -612,17 +632,20 @@ kernel_bootstrap_thread(void)
+ 	 */
+ 	kernel_bootstrap_thread_log("sched_startup");
+ 	sched_startup();
++	SWEET_MILE(35, "sched_startup done");
+ 
+ 	/*
+ 	 * Thread lifecycle maintenance (teardown, stack allocation)
+ 	 */
+ 	kernel_bootstrap_thread_log("thread_daemon_init");
+ 	thread_daemon_init();
++	SWEET_MILE(36, "thread_daemon_init done");
+ 
+ 	/*
+ 	 * Thread callout service.
+ 	 */
+ 	kernel_startup_initialize_upto(STARTUP_SUB_THREAD_CALL);
++	SWEET_MILE(37, "STARTUP_SUB_THREAD_CALL done");
+ 
+ 	/*
+ 	 * Remain on current processor as
+@@ -636,23 +659,27 @@ kernel_bootstrap_thread(void)
+ 	 */
+ 	kernel_bootstrap_thread_log("mapping_adjust");
+ 	mapping_adjust();
++	SWEET_MILE(38, "mapping_adjust done");
+ 
+ 	/*
+ 	 *	Create the clock service.
+ 	 */
+ 	kernel_bootstrap_thread_log("clock_service_create");
+ 	clock_service_create();
++	SWEET_MILE(39, "clock_service_create done");
+ 
+ 	/*
+ 	 *	Create the device service.
+ 	 */
+ 	device_service_create();
++	SWEET_MILE(40, "device_service_create done");
+ 
+ 	phys_carveout_init();
+ 
+ #if MACH_KDP
+ 	kernel_bootstrap_log("kdp_init");
+ 	kdp_init();
++	SWEET_MILE(41, "kdp_init done");
+ #endif
+ 
+ #if ALTERNATE_DEBUGGER
+@@ -670,6 +697,7 @@ kernel_bootstrap_thread(void)
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_SYSCTL);
++	SWEET_MILE(42, "STARTUP_SUB_SYSCTL done");
+ 
+ 	/*
+ 	 * Initialize the globals used for permuting kernel
+@@ -687,6 +715,7 @@ kernel_bootstrap_thread(void)
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_init_iokit");
+ 	PE_init_iokit();
++	SWEET_MILE(43, "PE_init_iokit done");
+ #endif
+ 
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+@@ -696,6 +725,7 @@ kernel_bootstrap_thread(void)
+ 	 * interrupts or preemption enabled may begin enforcement.
+ 	 */
+ 	kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT);
++	SWEET_MILE(44, "STARTUP_SUB_EARLY_BOOT done");
+ 
+ #if SCHED_HYGIENE_DEBUG
+ 	// Reset interrupts masked timeout before we enable interrupts
+@@ -707,12 +737,14 @@ kernel_bootstrap_thread(void)
+ 	 * This will start displaying progress to the user, start as early as possible
+ 	 */
+ 	initialize_screen(NULL, kPEAcquireScreen);
++	SWEET_MILE(45, "initialize_screen(kPEAcquireScreen) done");
+ 
+ 	/*
+ 	 *	Initialize the shared region module.
+ 	 */
+ 	vm_commpage_init();
+ 	vm_commpage_text_init();
++	SWEET_MILE(46, "commpage init done");
+ 
+ #if CONFIG_MACF
+ 	kernel_bootstrap_log("mac_policy_initmach");
+@@ -745,6 +777,7 @@ kernel_bootstrap_thread(void)
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);
++	SWEET_MILE(47, "STARTUP_SUB_LOCKDOWN done");
+ 
+ 	/*
+ 	 * Get rid of segments used to bootstrap kext loading. This removes
+@@ -754,10 +787,12 @@ kernel_bootstrap_thread(void)
+ 	 */
+ 	kernel_bootstrap_log("OSKextRemoveKextBootstrap");
+ 	OSKextRemoveKextBootstrap();
++	SWEET_MILE(48, "OSKextRemoveKextBootstrap done");
+ 
+ 	/* No changes to kernel text and rodata beyond this point. */
+ 	kernel_bootstrap_log("machine_lockdown");
+ 	machine_lockdown();
++	SWEET_MILE(49, "machine_lockdown done");
+ 
+ #ifdef CONFIG_XNUPOST
+ 	kern_return_t result = kernel_list_tests();
+@@ -771,6 +806,7 @@ kernel_bootstrap_thread(void)
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
+ 	PE_lockdown_iokit();
++	SWEET_MILE(50, "PE_lockdown_iokit done");
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+@@ -787,6 +823,7 @@ kernel_bootstrap_thread(void)
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++	SWEET_MILE(51, "calling bsd_init");
+ 	bsd_init();
+ #endif
+ 
