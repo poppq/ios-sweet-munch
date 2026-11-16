@@ -697,3 +697,24 @@ init v18 用 `getpid()` 判断自己是谁（fork 前存 pid、fork 后再取一
 可用的阻塞入口只有 `select(93)`——空 fd 集 + 0.2s 超时即为最便宜的让出手段。
 
 镜像 `shim-boot-mile25.img`（17,674,240B，MD5 `c1b59a6103da5e2e2bd25acdf58ec40a`）。
+
+### 13.14 mile26：`select` 当睡眠不行——超时永不触发
+
+init v19 给两个写循环各插了一次 `select(nfds=0, NULL, NULL, NULL, 0.2 s)`，
+想靠它让出 CPU。屏幕结果是：
+
+```
+*** SWEET userspace v20: ...
+P001
+P C002
+c
+```
+
+——两个进程各写了一个字符就**双双卡死**在 `select` 里，之后再无输出
+（下方内核自己的 `EARLY 71`–`79` 照常出现，证明内核活着，是用户态线程卡住了）。
+
+结论：这个内核上 `select` 的超时不会触发（RTC/日历时间零基准，
+timeout 依赖的定时基准不可用），**`select` 不能当 sleep 用**。
+要两个用户态任务真正同时跑，只能靠 SMP。
+
+镜像 `shim-boot-mile26.img`（17,674,240B，MD5 `4b559d18185d4694c06ffff53ffdb138`）。
