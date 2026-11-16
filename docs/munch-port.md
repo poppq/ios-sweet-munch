@@ -415,3 +415,26 @@ patch 0083 把 `bsd_init()` 函数体从入口到 `bsd_autoconf()` 之间的每�
 | 78–79 | `kminit()` 前后 |
 | 80 | `pseudo_inits` 全部跑完之后 |
 | 81–82 | `IOKitBSDInit()` 前后 |
+
+### 13.2 第二个断点：`IOKitInitializeTime()` 等 RTC
+
+`shim-boot-mile3.img`（内核 SHA256 `aa700a7d…`，MD5 `48d3b0f8…`）打出 61–66，最后一个编号是 **66 `bsd_bufferinit done`**，没有 67 —— 卡在 `IOKitInitializeTime()`。
+
+源码在 `iokit/Kernel/IOStartIOKit.cpp`：
+
+```c
+void IOKitInitializeTime(void) {
+	mach_timespec_t t = { 30, 0 };
+#ifndef BCM2837
+	IOService::waitForService(IOService::resourceMatching("IORTC"), &t);
+#endif
+	clock_initialize_calendar();
+}
+```
+
+它在等一个 `IORTC` 资源。我们的 platform expert 只挂了 AppleCLCD / FocalTech / 假电池这些，**没有任何 RTC 驱动**（munch 的 RTC 在 PMIC 里，要走 SPMI，我们没有 SPMI 驱动），所以 `IORTC` 永远不会被 publish，这个 wait 也就永远不会返回——整机卡在这里，连一口气都不动。
+
+patch 0084：SWEET 下跳过 `IORTC` 的等待（保留 `clock_initialize_calendar()`，时间从零起算），并在这一小段加 83–85 编号，确认它确实过去了。
+
+顺带说明一个设计后果：现在内核没有真实墙上时间，`clock_initialize_calendar()` 会以 1970 年或 boot 时间为基准。等以后接了 PMIC RTC（或从 shim 塞一个 RTC 资源）再补。
+
