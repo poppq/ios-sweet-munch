@@ -653,3 +653,30 @@ init v16 在 fork 之后让子进程立刻 `execve("/sbin/launchd")`、父进程
 （`execve` 本身没问题，mile22 已证明；问题只出在 fork 出来的第二个任务。）
 
 镜像 `shim-boot-mile23.img`（17,674,240B，MD5 `1d4827e1f5e2c8701ef228e6893e18e5`）。
+
+### 13.12 mile24：fork 其实一直是好的，判据错了
+
+init v17 不再靠 fork 的返回值分支，而是把 `getpid()` 与 fork 前的 pid 比一比。
+屏幕原文（`shot-mile24`）：
+
+```
+*** SWEET userspace v17: fork+exec, wait4 ***
+ P001          <- 父进程，pid 1
+ P002          <- 子进程，pid 2（它自己也走了父分支！）
+ W000          <- wait 状态原始值（0）
+ R010          <- wait4 返回 10
+ E001          <- carry 置位 = 出错，errno 10
+```
+
+三条结论：
+1. **fork 是好的**：pid 2 那个任务真的被调度、真的执行了用户态代码、
+   真的拿到了控制台 fd 写成功。前几轮"子进程没动静"完全是我判据写错：
+   这个内核给子进程的 `fork()` 返回值不是 0，于是子进程也进了父分支，
+   而父分支只打一个 `P` 就停顿（v14/v16 里表现为"没有 c"）。
+2. Darwin 上 `errno 10 = ECHILD`：父进程的 `wait4(2, …)` 被内核拒绝，
+   因为 XNU 在这个启动路径上没把 fork 出来的任务挂进 pid 1 的 children 列表。
+   即：**wait4 不可用于这里的父子同步**，将来 launchd 相关的等待要靠别的机制
+   （或先修 fork 的 children 链表挂接）。
+3. 上一轮 mile23 满屏的点，就是"wait4 立刻 ECHILD 返回"之后父进程的循环打点。
+
+镜像 `shim-boot-mile24.img`（17,674,240B，MD5 `38a0ab8da6a716c9a716765b9ea3835f`）。
