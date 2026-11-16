@@ -382,3 +382,36 @@ patch 0082 做三件事：
 | 58–60 | 拿到根 vnode / `load_init_program` 前后 |
 
 屏幕上最后一个编号就是真正卡住的位置，比任何照片堆栈都可靠。补丁已在模拟树上验证可干净应用（4 个文件 26 个 hunk），本地克隆里 commit `4e8f1c2`，CI 正在编。
+
+### 13.1 第一次真机结果：卡在 `bsd_autoconf` 之内
+
+`shim-boot-mile.img`（MD5 `22a12960…`，内核 SHA256 `38ff0806…`）在 munch 上引导后，屏幕上完整打出了 21–52，**没有 53**。也就是说：`bsd_init()` 已经进入，但 `bsd_autoconf()` 没有返回。
+
+同一张照片还暴露出一个此前被误读的事实：**普通 `printf` 在 `mig_table_max_displ` 之后就断了**（此后屏幕上出现的 `zone_init`、`VM bootstrap done` 等其实是更早写下的、被回绕覆盖后残留的内容），而 `sweet_early_mark` 走的是帧缓冲直写的独立通道，一路写到 52。所以"屏幕停在 `mig_table_max_displ`"从来不是卡在那句打印，只是那之后普通 console 输出没了。
+
+由此可知，之前放弃的持久化日志（logfs 2048 块 / oops 里读到 MIUI dmesg）并没有推翻任何结论：内核确实没走到 `IOFindBSDRoot`。
+
+patch 0083 把 `bsd_init()` 函数体从入口到 `bsd_autoconf()` 之间的每一步都打上编号（61–82），因为这段全程没有任何 printf，是唯一还完全黑暗的区域：
+
+| 编号 | 位置 |
+| --- | --- |
+| 61 | `kauth_init` 之后 |
+| 62 | proc/cred 初始化、`execargs_cache` 分配之后 |
+| 63 | `mac_policy_initbsd` + credential 关联之后 |
+| 64 | `chgproccnt` 之后 |
+| 65 | `kmem_suballoc`（`bsd_pageable_map`）之后 |
+| 66 | `bsd_bufferinit`（会起 `bcleanbuf_thread`）之后 |
+| 67 | `IOKitInitializeTime` 之后 |
+| 68 | `vfsinit`（各文件系统注册，含内建 HFS）之后 |
+| 69 | `mbinit` 之后 |
+| 70 | `aio_init` 之后 |
+| 71 | `pshm_cache_init` / `psem_cache_init` 之后 |
+| 72 | `dlil_init` 之后 |
+| 73 | `domaininit` 之后 |
+| 74 | `skywalk_init` 之后 |
+| 75 | `necp_init` / `netagent_init` 之后 |
+| 76 | `memorystatus_init` 之后 |
+| 77 | `sysctl_mib_init` 之后 |
+| 78–79 | `kminit()` 前后 |
+| 80 | `pseudo_inits` 全部跑完之后 |
+| 81–82 | `IOKitBSDInit()` 前后 |

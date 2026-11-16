@@ -1,0 +1,205 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 4df41ba..f2a039e 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -510,6 +510,9 @@ bsd_init(void)
+ 	/* Initialize kauth subsystem before instancing the first credential */
+ 	bsd_init_kprintf("calling kauth_init\n");
+ 	kauth_init();
++	#if defined(SWEET)
++		sweet_early_mark(61, "kauth_init done");
++	#endif
+ 
+ 	/* kernel_task->proc = kernproc; */
+ 	set_bsdtask_info(kernel_task, (void *)kernproc);
+@@ -555,6 +558,9 @@ bsd_init(void)
+ 	execargs_cache = zalloc_permanent(bsd_simul_execs * sizeof(vm_offset_t),
+ 	    ZALIGN(vm_offset_t));
+ 
++	#if defined(SWEET)
++		sweet_early_mark(62, "proc/cred init done");
++	#endif
+ 	if (current_task() != kernel_task) {
+ 		printf("bsd_init: We have a problem, "
+ 		    "current task is not kernel task\n");
+@@ -620,6 +626,9 @@ bsd_init(void)
+ 	}
+ #endif
+ 
++	#if defined(SWEET)
++		sweet_early_mark(63, "mac_policy_initbsd + cred assoc done");
++	#endif
+ 	TAILQ_INSERT_TAIL(&kernproc->p_uthlist, ut, uu_list);
+ 
+ 	bsd_init_kprintf("calling kauth_cred_create\n");
+@@ -657,6 +666,9 @@ bsd_init(void)
+ 	 */
+ 	bsd_init_kprintf("calling chgproccnt\n");
+ 	(void)chgproccnt(0, 1);
++	#if defined(SWEET)
++		sweet_early_mark(64, "chgproccnt done");
++	#endif
+ 
+ 	/*
+ 	 *	Allocate a kernel submap for pageable memory
+@@ -670,6 +682,9 @@ bsd_init(void)
+ 	    VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+ 	    KMS_PERMANENT | KMS_NOFAIL,
+ 	    VM_KERN_MEMORY_BSD).kmr_submap;
++	#if defined(SWEET)
++		sweet_early_mark(65, "kmem_suballoc done");
++	#endif
+ 
+ 	/*
+ 	 * Initialize buffers and hash links for buffers
+@@ -680,16 +695,25 @@ bsd_init(void)
+ 	 */
+ 	bsd_init_kprintf("calling bsd_bufferinit\n");
+ 	bsd_bufferinit();
++	#if defined(SWEET)
++		sweet_early_mark(66, "bsd_bufferinit done");
++	#endif
+ 
+ 	/*
+ 	 * Initialize the calendar.
+ 	 */
+ 	bsd_init_kprintf("calling IOKitInitializeTime\n");
+ 	IOKitInitializeTime();
++	#if defined(SWEET)
++		sweet_early_mark(67, "IOKitInitializeTime done");
++	#endif
+ 
+ 	/* Initialize the file systems. */
+ 	bsd_init_kprintf("calling vfsinit\n");
+ 	vfsinit();
++	#if defined(SWEET)
++		sweet_early_mark(68, "vfsinit done");
++	#endif
+ 
+ #if CONFIG_PROC_UUID_POLICY
+ 	/* Initial proc_uuid_policy subsystem */
+@@ -704,6 +728,9 @@ bsd_init(void)
+ 	/* Initialize mbuf's. */
+ 	bsd_init_kprintf("calling mbinit\n");
+ 	mbinit();
++	#if defined(SWEET)
++		sweet_early_mark(69, "mbinit done");
++	#endif
+ 	restricted_in_port_init();
+ #endif /* SOCKETS */
+ 
+@@ -727,6 +754,9 @@ bsd_init(void)
+ 	/* Initialize for async IO */
+ 	bsd_init_kprintf("calling aio_init\n");
+ 	aio_init();
++	#if defined(SWEET)
++		sweet_early_mark(70, "aio_init done");
++	#endif
+ 
+ 	pthread_init();
+ 	/* POSIX Shm and Sem */
+@@ -734,6 +764,9 @@ bsd_init(void)
+ 	pshm_cache_init();
+ 	bsd_init_kprintf("calling psem_cache_init\n");
+ 	psem_cache_init();
++	#if defined(SWEET)
++		sweet_early_mark(71, "pshm/psem cache init done");
++	#endif
+ 
+ 	/*
+ 	 * Initialize protocols.  Block reception of incoming packets
+@@ -744,12 +777,18 @@ bsd_init(void)
+ 	nwk_wq_init();
+ 	bsd_init_kprintf("calling dlil_init\n");
+ 	dlil_init();
++	#if defined(SWEET)
++		sweet_early_mark(72, "dlil_init done");
++	#endif
+ #endif /* NETWORKING */
+ #if SOCKETS
+ 	bsd_init_kprintf("calling socketinit\n");
+ 	socketinit();
+ 	bsd_init_kprintf("calling domaininit\n");
+ 	domaininit();
++	#if defined(SWEET)
++		sweet_early_mark(73, "domaininit done");
++	#endif
+ 	iptap_init();
+ #if FLOW_DIVERT
+ 	flow_divert_init();
+@@ -758,6 +797,9 @@ bsd_init(void)
+ #if SKYWALK
+ 	bsd_init_kprintf("calling skywalk_init\n");
+ 	(void) skywalk_init();
++	#if defined(SWEET)
++		sweet_early_mark(74, "skywalk_init done");
++	#endif
+ #endif /* SKYWALK */
+ #if NETWORKING
+ #if NECP
+@@ -765,6 +807,9 @@ bsd_init(void)
+ 	necp_init();
+ #endif
+ 	netagent_init();
++	#if defined(SWEET)
++		sweet_early_mark(75, "necp/netagent init done");
++	#endif
+ #endif /* NETWORKING */
+ 
+ #if CONFIG_FREEZE
+@@ -780,10 +825,16 @@ bsd_init(void)
+ 	/* Initialize kernel memory status notifications */
+ 	bsd_init_kprintf("calling memorystatus_init\n");
+ 	memorystatus_init();
++	#if defined(SWEET)
++		sweet_early_mark(76, "memorystatus_init done");
++	#endif
+ #endif /* CONFIG_MEMORYSTATUS */
+ 
+ 	bsd_init_kprintf("calling sysctl_mib_init\n");
+ 	sysctl_mib_init();
++	#if defined(SWEET)
++		sweet_early_mark(77, "sysctl_mib_init done");
++	#endif
+ 
+ 	bsd_init_kprintf("calling bsd_autoconf\n");
+ 	bsd_autoconf();
+@@ -1083,7 +1134,15 @@ kern_return_t
+ bsd_autoconf(void)
+ {
+ 	kprintf("bsd_autoconf: calling kminit\n");
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(78, "calling kminit");
++#endif
+ 	kminit();
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(79, "kminit done");
++#endif
+ 
+ 	/*
+ 	 * Early startup for bsd pseudodevices.
+@@ -1095,8 +1154,20 @@ bsd_autoconf(void)
+ 			(*pi->ps_func)(pi->ps_count);
+ 		}
+ 	}
+-
+-	return IOKitBSDInit();
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(80, "pseudo_inits done");
++#endif
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(81, "calling IOKitBSDInit");
++#endif
++	kern_return_t __sweet_kr = IOKitBSDInit();
++#if defined(SWEET)
++	extern void sweet_early_mark(unsigned int, const char *);
++	sweet_early_mark(82, "IOKitBSDInit done");
++#endif
++	return __sweet_kr;
+ }
+ 
+ 
