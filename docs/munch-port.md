@@ -555,3 +555,53 @@ VFS 三层在用户态可用，同时能直接看出哪些驱动真的 publish �
   clk/GDSC/PHY/RPMh，才能谈用分区当根。
 - **驱动**：显示只有 cont_splash 帧缓冲直出，触控（FocalTech FT3658U）只注册
   未读点，无 RTC、无电量、无按键。
+
+### 13.8 mile9–mile20：用户态探针的全部因果，以及"静默"的真正原因
+
+这一段是整轮排查的结论，也是本项目第一个确定的**软件缺陷**（不是内核的问题）。
+
+1. **控制台的"静默"是我自己的汇编错了。** mile9–mile17 的 init 都出现
+   "打出前几行后集体静默"，先被误判成 devfs 挂载叠加、`open("/dev")` 毒化
+   控制台、`print_num` 破坏 fd、突发写入填满 tty 队列（为此还做了一版
+   `write_console` 内 0.1s `cntvct` 忙等节流的 mile17）。逐字核对源码后确认：
+   `line_loop` 用 `bl` 调用 `write_console` 之后又用裸 `ret` 返回，`x30` 早已
+   被那次 `bl` 覆盖，于是 `ret` 跳回循环中部，进程**无输出地空转**。
+   v6（mile13）之所以能连打 21 行还继续冒点，是因为它那个循环是内联的、
+   没有 `bl`，所以 `x30` 没被破坏。
+   结论：**任何会 `ret` 的例程都必须 `stp x29,x30` / `ldp` 保存返回地址**；
+   控制台本身从来没问题，写入既不需要节流也没有条数上限。
+
+2. **v5 的"select 不返回"也是同一个坑的另一种表现**，不是 RTC 缺失导致超时
+   机制死亡——同一条汇编链上的 bug 让进程在第一次 `select` 前后就走歪了。
+   当前可靠的计时方式仍然是 EL0 `cntvct_el0` 忙等（`CNTFRQ=0x124F800`，
+   0.5s = 9,600,000 ticks = `0x928000`）。
+
+3. **v11 的 pid 1 panic**：v11 修好了栈帧、复用 v12 的缓冲区布局后仍然 panic
+   （`pid 1: launchd`，panic 报告被 fbcon 环绕覆盖，原因行丢失）。改成 v12 的
+   "每步一个标记 + 小缓冲 + 严格栈帧"之后不再 panic，因此 panic 出在 v11 那版
+   的缓冲区/遍历写法上，具体点未再复现（v13 已验证同布局可用）。
+
+4. **v12（mile19）一次性证明了整条链**，屏幕原文：
+   `*** SWEET userspace v12: devfs probe ***` /
+   ` v000 D001 G792 R032 N001 . OK` + 持续点：
+   - `v000`：`open("/dev/console")` 返回 fd **0**
+   - `D001`：`open("/dev", O_RDONLY)` 返回 fd **1**
+   - `G792`：`getdirentries64(fd, buf, 1024, &basep)` 第一次就返回 **792 字节**
+   - `R032`：第一条 `d_reclen` = **32**
+   - `N001`：第一条 `d_namlen` = **1**，名字是 `.`
+   即 dirent 布局确认为 `d_reclen u16 @16`、`d_namlen u16 @18`、`d_name @21`，
+   与 bsd/sys/dirent.h 一致。
+
+5. **v13（mile20）把 `/dev` 真正列了出来**：屏幕从上到下是
+   `pty3 tty4 pty4 … ttyS0 ptyS0 ttyS1 … ttyr2 ptyr2 ttyr3`，随后
+   ` END120`，然后继续冒点。`120` 是 init 里 `ENTRY_MAX` 的上限，
+   说明 devfs 里的节点数远超 120（大量 `tty*`/`pty*` 成对出现），
+   遍历是按 4 KiB 一块、每块约 24 条记录连续取的。
+   这意味着用户态的 VFS 读目录、`copyout`、多轮 `write` 全部可用。
+
+镜像：`shim-boot-mile19.img`（17,674,240B，MD5 `4442b23a80af44ae358ee1728e12afb5`）、
+`shim-boot-mile20.img`（17,674,240B，MD5 `f5f46b2bbfac19895694e59c3a1d805d`）。
+
+6. 待办：`ENTRY_MAX` 放开后再数一次总数；`read`/`ioctl`/`fork`/`execve`
+   逐个验证；然后才是把真实 iOS 根塞进内存盘（受 boot.img payload 体积限制）
+   或者回头把 UFS 补活（受 Qcom clk/PHY/RPMh 限制）。
