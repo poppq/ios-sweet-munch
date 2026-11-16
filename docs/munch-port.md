@@ -718,3 +718,28 @@ timeout 依赖的定时基准不可用），**`select` 不能当 sleep 用**。
 要两个用户态任务真正同时跑，只能靠 SMP。
 
 镜像 `shim-boot-mile26.img`（17,674,240B，MD5 `4b559d18185d4694c06ffff53ffdb138`）。
+
+### 13.15 mile27：8 核起不来，卡在 cpu1
+
+把 cmdline 的 `cpus=1` 改成 `cpus=8` 之后，屏幕出现：
+
+```
+SWEET CPU: requested=8 selected=8 (limit=8)
+SWEET CPU: cpu=0 mpidr=0x0 came alive; SG1 OK
+SWEET CPU: cpu=1 CPU_ON target=0x100 entry_pa=0x101492000 context=1
+SWEET CPU: cpu=1 PSCI CPU_ON rc=0
+```
+
+`rc=0`（ABL 接受了多核启动命令），但 cpu1 再没有任何后续输出，
+`EARLY` 编号停在 50，整机卡在等第二个核起来。
+
+结论：**本机 secondary CPU bring-up 不通**（ResetHandler 那条物理入口路径
+没有真正跑起来或跑挂），8 核暂时不可用，实验全部退回 `cpus=1`。
+另外这也坐实了前面两条现象（`select` 超时永不触发、单核写循环饿死另一进程）
+的背后原因：**没有可用的调度 tick**，所以既不能抢占也没有超时唤醒。
+
+镜像 `shim-boot-mile27.img`（17,674,240B，MD5 `52faa0f2891788ce00044f03bdcad7ed`）。
+
+由此新增内核探针 `0087-sweet-timer-tick-probe.patch`：在 `sleh_irq()` 定时器分支里
+每 256 次 tick 打一个 `sweet_early_mark(700 + n)`，用两次拍照的数字变化直接判定
+时钟中断是否真的在跑。
