@@ -743,3 +743,17 @@ SWEET CPU: cpu=1 PSCI CPU_ON rc=0
 由此新增内核探针 `0087-sweet-timer-tick-probe.patch`：在 `sleh_irq()` 定时器分支里
 每 256 次 tick 打一个 `sweet_early_mark(700 + n)`，用两次拍照的数字变化直接判定
 时钟中断是否真的在跑。
+
+### 13.16 mile28：tick 探针第一版被刷屏盖住
+
+0087 在定时器中断里每 256 次 tick 调一次 `sweet_early_mark(700+n)`，
+走的是会绕回滚动的控制台文本通道；用户态 init 的刷屏把这些标记全部覆盖了，
+屏幕上只剩 `P/c` 洪流，读不到计数。
+
+0088 改为**固定行重绘**：`sweet_tick_probe(n)` 在帧缓冲固定行（倒数第 3 行）
+直接画 3 位十进制计数，不走 `early_row/early_col`，每次中断自绘自覆，
+不会被 fbcon 绕回冲掉。每 16 次 tick 刷新一次，计数按 1000 取模。
+两张照片对比该行数字即可判定 tick 是否连续在跑。
+
+镜像 `shim-boot-mile28.img`（17,674,240B，MD5 `aae55acf360a01e3d674c10f8898f60f`，
+内核 CI run `43907072782`）。

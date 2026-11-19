@@ -10,7 +10,7 @@
  * Branching by process identity instead of by the fork return value fixes it:
  * read getpid() before fork, compare after.
  *
- *   *** SWEET userspace v20: two processes, SMP ***
+ *   *** SWEET userspace v21: quiet probe, hang after banner ***
  *    P001        parent, pid 1
  *    C002        child, pid 2
  *   then the parent writes "P" and the child writes "c" without pausing, so an
@@ -42,6 +42,7 @@ _start:
 	mov	x19, x0
 
 	bl	p_banner
+	b	hang
 
 	mov	x16, #SYS_getpid
 	svc	#0x80
@@ -164,7 +165,7 @@ hang:
 path_console:
 	.asciz	"/dev/console"
 s_banner:
-	.ascii	"\n*** SWEET userspace v20: two processes, SMP ***\n"
+	.ascii	"\n*** SWEET userspace v21: quiet probe, hang after banner ***\n"
 s_banner_end:
 s_space:
 	.ascii	" "

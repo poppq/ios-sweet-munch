@@ -1,0 +1,94 @@
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 85184f4..3a47696 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -113,6 +113,42 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	sweet_early_putc('\n');
+ }
+ 
++void
++sweet_tick_probe(unsigned int ticks)
++{
++	if (early_disabled) {
++		return;
++	}
++	unsigned int row = EARLY_ROWS - 3u;
++	for (unsigned int y = 0; y < EARLY_CELL_H; y++) {
++		volatile uint32_t *line = EARLY_FB + (row * EARLY_CELL_H + y) * EARLY_STRIDE;
++		for (unsigned int x = 0; x < EARLY_CELL_W * 3u; x++) {
++			line[x] = 0xff000000u;
++		}
++	}
++	unsigned char digits[3];
++	digits[0] = '0' + (ticks / 100u) % 10u;
++	digits[1] = '0' + (ticks / 10u) % 10u;
++	digits[2] = '0' + ticks % 10u;
++	for (unsigned int ci = 0; ci < 3u; ci++) {
++		const unsigned char *glyph = iso_font + digits[ci] * 16;
++		for (unsigned int gy = 0; gy < 16u; gy++) {
++			for (unsigned int sy = 0; sy < EARLY_SCALE; sy++) {
++				volatile uint32_t *line = EARLY_FB +
++				    (row * EARLY_CELL_H + gy * EARLY_SCALE + sy) * EARLY_STRIDE +
++				    ci * EARLY_CELL_W;
++				for (unsigned int gx = 0; gx < 8u; gx++) {
++					uint32_t pixel = (glyph[gy] & (1u << gx)) ? 0xffffffffu : 0xff000000u;
++					for (unsigned int sx = 0; sx < EARLY_SCALE; sx++) {
++						line[gx * EARLY_SCALE + sx] = pixel;
++					}
++				}
++			}
++		}
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
+ void
+ sweet_early_panic(const char *fmt, va_list *args)
+ {
+
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index d7a25f2..b0aa9f1 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -8,6 +8,7 @@
+ 
+ #if defined(SWEET)
+ void sweet_early_mark(unsigned int stage, const char *label);
++void sweet_tick_probe(unsigned int ticks);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+ void sweet_early_relocate(uint64_t base);
+
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 28ecf10..74b4792 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1875,10 +1875,10 @@ sleh_irq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_END();
+ #if defined(SWEET)
+ 		{
+-			extern void sweet_early_mark(unsigned int, const char *);
++			extern void sweet_tick_probe(unsigned int);
+ 			static unsigned int sweet_tick_count;
+-			if ((++sweet_tick_count & 0xffu) == 0) {
+-				sweet_early_mark(700u + ((sweet_tick_count >> 8) % 200u), "tick");
++			if ((++sweet_tick_count & 0xfu) == 0) {
++				sweet_tick_probe((sweet_tick_count >> 4) % 1000u);
+ 			}
+ 		}
+ #endif
+@@ -2013,10 +2013,10 @@ sleh_fiq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_END();
+ #if defined(SWEET)
+ 		{
+-			extern void sweet_early_mark(unsigned int, const char *);
++			extern void sweet_tick_probe(unsigned int);
+ 			static unsigned int sweet_tick_count;
+-			if ((++sweet_tick_count & 0xffu) == 0) {
+-				sweet_early_mark(700u + ((sweet_tick_count >> 8) % 200u), "tick");
++			if ((++sweet_tick_count & 0xfu) == 0) {
++				sweet_tick_probe((sweet_tick_count >> 4) % 1000u);
+ 			}
+ 		}
+ #endif
+
