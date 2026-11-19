@@ -1,0 +1,153 @@
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 3a47696..0eb2d5b 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -113,30 +113,20 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	sweet_early_putc('\n');
+ }
+ 
+-void
+-sweet_tick_probe(unsigned int ticks)
++static void
++sweet_draw_num(unsigned int row, unsigned int col0, unsigned int value)
+ {
+-	if (early_disabled) {
+-		return;
+-	}
+-	unsigned int row = EARLY_ROWS - 3u;
+-	for (unsigned int y = 0; y < EARLY_CELL_H; y++) {
+-		volatile uint32_t *line = EARLY_FB + (row * EARLY_CELL_H + y) * EARLY_STRIDE;
+-		for (unsigned int x = 0; x < EARLY_CELL_W * 3u; x++) {
+-			line[x] = 0xff000000u;
+-		}
+-	}
+ 	unsigned char digits[3];
+-	digits[0] = '0' + (ticks / 100u) % 10u;
+-	digits[1] = '0' + (ticks / 10u) % 10u;
+-	digits[2] = '0' + ticks % 10u;
++	digits[0] = '0' + (value / 100u) % 10u;
++	digits[1] = '0' + (value / 10u) % 10u;
++	digits[2] = '0' + value % 10u;
+ 	for (unsigned int ci = 0; ci < 3u; ci++) {
+ 		const unsigned char *glyph = iso_font + digits[ci] * 16;
+ 		for (unsigned int gy = 0; gy < 16u; gy++) {
+ 			for (unsigned int sy = 0; sy < EARLY_SCALE; sy++) {
+ 				volatile uint32_t *line = EARLY_FB +
+ 				    (row * EARLY_CELL_H + gy * EARLY_SCALE + sy) * EARLY_STRIDE +
+-				    ci * EARLY_CELL_W;
++				    (col0 + ci) * EARLY_CELL_W;
+ 				for (unsigned int gx = 0; gx < 8u; gx++) {
+ 					uint32_t pixel = (glyph[gy] & (1u << gx)) ? 0xffffffffu : 0xff000000u;
+ 					for (unsigned int sx = 0; sx < EARLY_SCALE; sx++) {
+@@ -146,6 +136,23 @@ sweet_tick_probe(unsigned int ticks)
+ 			}
+ 		}
+ 	}
++}
++
++void
++sweet_irq_probe(unsigned int total, unsigned int last_intid)
++{
++	if (early_disabled) {
++		return;
++	}
++	unsigned int row = EARLY_ROWS; /* free bottom margin, console never writes here */
++	for (unsigned int y = 0; y < EARLY_CELL_H; y++) {
++		volatile uint32_t *line = EARLY_FB + (row * EARLY_CELL_H + y) * EARLY_STRIDE;
++		for (unsigned int x = 0; x < EARLY_CELL_W * 9u; x++) {
++			line[x] = 0xff000000u;
++		}
++	}
++	sweet_draw_num(row, 0u, total);
++	sweet_draw_num(row, 6u, last_intid);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
+
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index b0aa9f1..baa74c6 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -8,7 +8,7 @@
+ 
+ #if defined(SWEET)
+ void sweet_early_mark(unsigned int stage, const char *label);
+-void sweet_tick_probe(unsigned int ticks);
++void sweet_irq_probe(unsigned int total, unsigned int last_intid);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+ void sweet_early_relocate(uint64_t base);
+
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 74b4792..ff4855e 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1867,6 +1867,18 @@ sleh_irq(arm_saved_state_t *state)
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
++#if defined(SWEET)
++	{
++		extern void sweet_irq_probe(unsigned int, unsigned int);
++		static unsigned int sweet_irq_total;
++		static unsigned int sweet_irq_last;
++		sweet_irq_total++;
++		sweet_irq_last = intid;
++		if ((sweet_irq_total & 0xfu) == 0) {
++			sweet_irq_probe(sweet_irq_total % 1000u, sweet_irq_last % 1000u);
++		}
++	}
++#endif
+ 	if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+@@ -1875,11 +1887,9 @@ sleh_irq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_END();
+ #if defined(SWEET)
+ 		{
+-			extern void sweet_tick_probe(unsigned int);
+-			static unsigned int sweet_tick_count;
+-			if ((++sweet_tick_count & 0xfu) == 0) {
+-				sweet_tick_probe((sweet_tick_count >> 4) % 1000u);
+-			}
++			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++			uint64_t now  = __builtin_arm_rsr64("CNTVCT_EL0");
++			__builtin_arm_wsr64("CNTV_CVAL_EL0", now + freq / 100u);
+ 		}
+ #endif
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+@@ -2011,15 +2021,6 @@ sleh_fiq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+-#if defined(SWEET)
+-		{
+-			extern void sweet_tick_probe(unsigned int);
+-			static unsigned int sweet_tick_count;
+-			if ((++sweet_tick_count & 0xfu) == 0) {
+-				sweet_tick_probe((sweet_tick_count >> 4) % 1000u);
+-			}
+-		}
+-#endif
+ 	}
+ 
+ #if APPLEVIRTUALPLATFORM
+
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 6089db9..58a2f45 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -213,6 +213,12 @@ pe_init_fiq()
+ 	}
+ 	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
++	{
++		uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++		uint64_t now  = __builtin_arm_rsr64("CNTVCT_EL0");
++		__builtin_arm_wsr64("CNTV_CVAL_EL0", now + freq / 100u);
++		__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
++	}
+ #else
+ 	// Enable the forwarding of the vtimer interrupt
+ 	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
+

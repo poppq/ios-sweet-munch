@@ -757,3 +757,17 @@ SWEET CPU: cpu=1 PSCI CPU_ON rc=0
 
 镜像 `shim-boot-mile28.img`（17,674,240B，MD5 `aae55acf360a01e3d674c10f8898f60f`，
 内核 CI run `43907072782`）。
+
+### 13.17 mile29：0088 固定行探针未读到计数
+
+mile29b（0088 内核 + 回退改挂起的 init）上机后刷屏消失，EARLY 70–79 清晰，
+但固定行上没有出现三位计数；定时器中断是否进入 sleh_irq 仍不能定论。
+
+0089 两项改动：
+1. 探针改为**通用中断计数**：sleh_irq 入口对所有非 spurious 中断累计 `total`、
+   记录最后一个 `intid`，画在帧缓冲最底部 32px 边距（控制台从不写这里），
+   左组三位=中断总数，右组三位=最后中断号。总数恒 000 → 没有任何中断到达；
+   总数增长但右组不是 19 → 中断在别的 PPI，intid 编号需修正。
+2. 显式武装虚拟定时器：pe_init_fiq 打开 Group1 后写 CNTV_CVAL=CNTVCT+CNTFRQ/100、
+   CNTV_CTL 使能；定时器分支里每次中断按同一周期重装 CVAL。此前 XNU 没有注册
+   timebase 时钟驱动，decrementer 从未被装载，这是 tick 不触发的头号嫌疑。
