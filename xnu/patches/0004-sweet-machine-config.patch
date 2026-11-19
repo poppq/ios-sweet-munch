@@ -218,7 +218,7 @@ new file mode 100644
 index 0000000..a044ad0
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/SWEET.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,74 @@
 +/*
 + * Board config for the Redmi Note 10 Pro ("sweet", Qualcomm SM7150 /
 + * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
@@ -256,11 +256,10 @@ index 0000000..a044ad0
 +#endif /* ! ASSEMBLER */
 +
 +/*
-+ * Qualcomm numbers the architected timer PPIs 1/2/3/0 (secure phys, phys,
-+ * virt, hyp) instead of the usual 13/14/11/10: the virtual timer XNU uses
-+ * (CNTV) is INTID 16 + 3 = 19.
++ * Standard armv8 generic timer: the virtual timer (CNTVIRQ) is PPI 11,
++ * GIC INTID 16 + 11 = 27 (QEMU virt default agrees).
 + */
-+#define SWEET_VTIMER_INTID        19
++#define SWEET_VTIMER_INTID        27
 +#define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
 +
 +#define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt

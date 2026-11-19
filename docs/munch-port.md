@@ -771,3 +771,20 @@ mile29b（0088 内核 + 回退改挂起的 init）上机后刷屏消失，EARLY 
 2. 显式武装虚拟定时器：pe_init_fiq 打开 Group1 后写 CNTV_CVAL=CNTVCT+CNTFRQ/100、
    CNTV_CTL 使能；定时器分支里每次中断按同一周期重装 CVAL。此前 XNU 没有注册
    timebase 时钟驱动，decrementer 从未被装载，这是 tick 不触发的头号嫌疑。
+
+### 13.18 mile30：探针被进度条盖住；vtimer INTID 修正为 27
+
+mile30（0089）上机停在 EARLY 79，底部没有可读探针数字：探针行 74 与
+32px 底部边距里的进度条同区，条形块把数字覆盖；且计数器要到第 16 次中断
+才首次绘制，零中断时屏幕上什么都不画，无法区分“中断没来”和“被盖住”。
+
+核对 mainline armv8-timer 设备树绑定：虚拟定时器 CNTVIRQ = PPI 11，
+GIC INTID 16+11=27（QEMU virt 默认也是 27）。此前 0004/ADT 用的 19
+（PPI 3）是错误猜测，GICR 只使能了 19，真实定时器在 27 上触发会被丢弃。
+
+0090 改动：
+1. INTID 19→27（0004 默认宏、mkadt VTIMER_INTID 同步改）。
+2. 进度条收窄到边距顶部 8px；探针数字画在下方 2380 起的 16px 高 band，
+   1:1 字号；启动时 pe_init_fiq 先画 000/000 基线；此后每来一次中断就
+   重绘，不再按 16 次节流。
+3. 保留 0089 的显式 CNTV_CVAL/CTL 武装与周期重装。
