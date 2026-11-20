@@ -1,0 +1,82 @@
+diff --git a/xnu/osfmk/arm64/sleh.c b/xnu/osfmk/arm64/sleh.c
+index f5fd263..b9f9868 100644
+--- a/xnu/osfmk/arm64/sleh.c
++++ b/xnu/osfmk/arm64/sleh.c
+@@ -1869,12 +1869,14 @@ sleh_irq(arm_saved_state_t *state)
+ 	}
+ #if defined(SWEET)
+ 	{
+-		extern void sweet_irq_probe(unsigned int, unsigned int);
++		extern void sweet_irq_probe(unsigned int, unsigned int, unsigned int);
++		extern volatile unsigned int sweet_quantum_expiries;
+ 		static unsigned int sweet_irq_total;
+ 		static unsigned int sweet_irq_last;
+ 		sweet_irq_total++;
+ 		sweet_irq_last = intid;
+-		sweet_irq_probe(sweet_irq_total % 1000u, sweet_irq_last % 1000u);
++		sweet_irq_probe(sweet_irq_total % 1000u, sweet_irq_last % 1000u,
++		    sweet_quantum_expiries % 1000u);
+ 	}
+ #endif
+ 	if (intid == sweet_vtimer_intid) {
+diff --git a/xnu/osfmk/arm64/sweet_early.c b/xnu/osfmk/arm64/sweet_early.c
+index 6fdc696..c13b7e7 100644
+--- a/xnu/osfmk/arm64/sweet_early.c
++++ b/xnu/osfmk/arm64/sweet_early.c
+@@ -28,6 +28,8 @@ extern unsigned char iso_font[256 * 16];
+ static unsigned int early_row, early_col;
+ static unsigned int early_started, early_disabled, early_panicking;
+ 
++volatile unsigned int sweet_quantum_expiries;
++
+ static void
+ sweet_early_clear_row(void)
+ {
+@@ -137,7 +139,7 @@ sweet_draw_num(unsigned int col0, unsigned int value, uint32_t fg)
+ }
+ 
+ void
+-sweet_irq_probe(unsigned int total, unsigned int last_intid)
++sweet_irq_probe(unsigned int total, unsigned int last_intid, unsigned int quantum)
+ {
+ 	if (early_disabled) {
+ 		return;
+@@ -150,6 +152,7 @@ sweet_irq_probe(unsigned int total, unsigned int last_intid)
+ 	}
+ 	sweet_draw_num(6u, total, 0xffffffffu);
+ 	sweet_draw_num(16u, last_intid, 0xffffff00u);
++	sweet_draw_num(26u, quantum, 0xff00ff00u);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
+diff --git a/xnu/osfmk/arm64/sweet_early.h b/xnu/osfmk/arm64/sweet_early.h
+index baa74c6..3a2e7b1 100644
+--- a/xnu/osfmk/arm64/sweet_early.h
++++ b/xnu/osfmk/arm64/sweet_early.h
+@@ -7,8 +7,9 @@
+ #include <stdint.h>
+ 
+ #if defined(SWEET)
++extern volatile unsigned int sweet_quantum_expiries;
+ void sweet_early_mark(unsigned int stage, const char *label);
+-void sweet_irq_probe(unsigned int total, unsigned int last_intid);
++void sweet_irq_probe(unsigned int total, unsigned int last_intid, unsigned int quantum);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+ void sweet_early_relocate(uint64_t base);
+diff --git a/xnu/osfmk/kern/priority.c b/xnu/osfmk/kern/priority.c
+index fc77b97..fb05c9c 100644
+--- a/xnu/osfmk/kern/priority.c
++++ b/xnu/osfmk/kern/priority.c
+@@ -108,6 +108,11 @@ thread_quantum_expire(
+ 	assert(processor == current_processor());
+ 	assert(thread == current_thread());
+ 
++#if defined(SWEET)
++	extern volatile unsigned int sweet_quantum_expiries;
++	sweet_quantum_expiries++;
++#endif
++
+ 	KDBG_RELEASE(MACHDBG_CODE(
+ 		    DBG_MACH_SCHED, MACH_SCHED_QUANTUM_EXPIRED) | DBG_FUNC_START);
+ 
