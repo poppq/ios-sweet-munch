@@ -821,3 +821,13 @@ mile34（0093）上机：探针内移后可读，白色总数 `083`、黄色中�
 读数。**GIC → sleh_irq → vtimer(27) 链路与重复武装均成立**。遗留：用户态仍停在
 banner/P 循环，select 超时不触发、兄弟进程调度问题待查；下一步核对 vtimer 分支是否
 真正进入 `rtclock_intr` 以及 XNU 时基/调度是否消费该 tick。
+
+### 13.23 mile35：新内核下 `select` 超时触发，双进程交替运行
+
+mile35 = mile34（0093）内核 + 从 mile26 payload 末段抠出的 v19 init（`select(nfds=0,NULL,NULL,NULL,0.2s)` 让出测试），无需重编内核。
+旧内核（mile26）现象：两个进程各写一个字符后双双卡死在 `select`，屏幕停在 `P001 / P C002 / c`。
+mile35 上机：banner `SWEET userspace v19: two processes, yleldlng` 后 `P001`、`P C002`，随后整屏被交替的 `cPcPcP…` 填满——两个进程在 `select` 返回后继续写循环。
+底部探针：白色中断总数 `854`、黄色中断号 `027`，中断持续送达。
+
+结论：**vtimer 中断 → `rtclock_intr` → `timer_intr` 定时队列弹出 → 用户态 `select` 超时唤醒这条链路在新内核下走通了**；mile26 当年的 `select` 永不超时随时钟中断打通而消失。单核上两个用户态任务可经 `select` 让出并交替运行。
+镜像 `shim-boot-mile35.img`（17,674,240B，MD5 `d4bacee5fe4ca8d17aeafd4a97f48da9`），CDN `https://aka.doubaocdn.com/s/8wjCDppQa9`。
