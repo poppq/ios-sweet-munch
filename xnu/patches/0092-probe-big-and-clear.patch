@@ -1,0 +1,60 @@
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index fc3239f..c50a7ad 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -94,7 +94,7 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
+ 	unsigned int bar = stage % 22;
+-	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT - 24u; y++) {
++	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT - 28u; y++) {
+ 		for (unsigned int x = bar * 48; x < bar * 48 + 44; x++) {
+ 			EARLY_FB[y * EARLY_STRIDE + x] = color;
+ 		}
+@@ -113,10 +113,10 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	sweet_early_putc('\n');
+ }
+ 
+-#define PROBE_Y (EARLY_HEIGHT - 20u)
++#define PROBE_Y (EARLY_HEIGHT - 24u)
+ 
+ static void
+-sweet_draw_num(unsigned int col0, unsigned int value)
++sweet_draw_num(unsigned int col0, unsigned int value, uint32_t fg)
+ {
+ 	unsigned char digits[3];
+ 	digits[0] = '0' + (value / 100u) % 10u;
+@@ -126,9 +126,11 @@ sweet_draw_num(unsigned int col0, unsigned int value)
+ 		const unsigned char *glyph = iso_font + digits[ci] * 16;
+ 		for (unsigned int gy = 0; gy < 16u; gy++) {
+ 			volatile uint32_t *line = EARLY_FB +
+-			    (PROBE_Y + gy) * EARLY_STRIDE + (col0 + ci) * 8u;
++			    (PROBE_Y + gy) * EARLY_STRIDE + (col0 + ci) * 16u;
+ 			for (unsigned int gx = 0; gx < 8u; gx++) {
+-				line[gx] = (glyph[gy] & (1u << gx)) ? 0xffffffffu : 0xff000000u;
++				uint32_t px = (glyph[gy] & (1u << gx)) ? fg : 0xff000000u;
++				line[gx * 2] = px;
++				line[gx * 2 + 1] = px;
+ 			}
+ 		}
+ 	}
+@@ -140,14 +142,14 @@ sweet_irq_probe(unsigned int total, unsigned int last_intid)
+ 	if (early_disabled) {
+ 		return;
+ 	}
+-	for (unsigned int y = 0; y < 16u; y++) {
+-		volatile uint32_t *line = EARLY_FB + (PROBE_Y + y) * EARLY_STRIDE;
+-		for (unsigned int x = 0; x < 15u * 8u; x++) {
++	for (unsigned int y = 0; y < 27u; y++) {
++		volatile uint32_t *line = EARLY_FB + (PROBE_Y - 3u + y) * EARLY_STRIDE;
++		for (unsigned int x = 0; x < EARLY_WIDTH; x++) {
+ 			line[x] = 0xff000000u;
+ 		}
+ 	}
+-	sweet_draw_num(0u, total);
+-	sweet_draw_num(6u, last_intid);
++	sweet_draw_num(0u, total, 0xffffffffu);
++	sweet_draw_num(8u, last_intid, 0xffffff00u);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
