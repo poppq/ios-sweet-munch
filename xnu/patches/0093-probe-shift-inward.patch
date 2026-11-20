@@ -1,0 +1,15 @@
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index c50a7ad..6fdc696 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -148,8 +148,8 @@ sweet_irq_probe(unsigned int total, unsigned int last_intid)
+ 			line[x] = 0xff000000u;
+ 		}
+ 	}
+-	sweet_draw_num(0u, total, 0xffffffffu);
+-	sweet_draw_num(8u, last_intid, 0xffffff00u);
++	sweet_draw_num(6u, total, 0xffffffffu);
++	sweet_draw_num(16u, last_intid, 0xffffff00u);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
